@@ -627,7 +627,7 @@ if uploaded_file:
                                           help="Zeigt die Geschwindigkeit des ausgewählten Kanals mit zweiter Y-Achse rechts.")
         if show_velocity:
             window_length = st.sidebar.slider(
-                "Glättung Fenstergröße", 10, 90, step=1,
+                "Glättung Geschwindigkeit", 10, 90, step=1,
                 value=st.session_state.window_length,
                 key="window_length",
                 help="Ungerade Zahl für Savitzky-Golay-Filter (größer = glatter, aber weniger Details)."
