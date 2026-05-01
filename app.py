@@ -602,25 +602,24 @@ if uploaded_file:
         st.session_state.xa = xa
         st.session_state.xb = xb
 
-        st.sidebar.number_input(
-            "Zeit XA (ms)", min_zeit, max_zeit,
-            value=xa, step=0.001, format="%.3f",
-            key="xa_nw", on_change=update_xa_from_num,
-        )
-        st.sidebar.number_input(
-            "Zeit XB (ms)", min_zeit, max_zeit,
-            value=xb, step=0.001, format="%.3f",
-            key="xb_nw", on_change=update_xb_from_num,
-        )
-
-        if xa > xb:
-            st.sidebar.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
-
-        # Zeitbasis in ms (0.01 … 0.10 ms entspricht 10 … 100 µs bei 392 kHz)
-        v_time_base_ms = st.sidebar.slider(
-            "Zeitbasis v-max (ms)", 0.01, 0.10, 0.05,
-            step=0.01, format="%.2f ms",
-        )
+        with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
+            st.number_input(
+                "Zeit XA (ms)", min_zeit, max_zeit,
+                value=xa, step=0.001, format="%.3f",
+                key="xa_nw", on_change=update_xa_from_num,
+            )
+            st.number_input(
+                "Zeit XB (ms)", min_zeit, max_zeit,
+                value=xb, step=0.001, format="%.3f",
+                key="xb_nw", on_change=update_xb_from_num,
+            )
+            if xa > xb:
+                st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
+            # Zeitbasis in ms (0.01 … 0.10 ms entspricht 10 … 100 µs bei 392 kHz)
+            v_time_base_ms = st.slider(
+                "Zeitbasis v-max (ms)", 0.01, 0.10, 0.05,
+                step=0.01, format="%.2f ms",
+            )
         show_v_avg  = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False)
         show_rect_fit = st.sidebar.toggle("Best-fit Rechteck füllen", value=False,
                                           help="Zeigt vertikale Kanten und hellgrüne Füllung für alle erkannten Pulse.")
