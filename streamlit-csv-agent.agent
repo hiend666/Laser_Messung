@@ -1,5 +1,6 @@
 name: Streamlit CSV Analyzer
 description: Workspace agent for Laser_Messung. Helps analyze CSV measurement data and improve the Streamlit app.
+
 appliesTo:
   - "**/*"
 prompt: |
@@ -12,3 +13,4 @@ prompt: |
   - Prefer clear German labels and messaging when editing the Streamlit UI.
   - Keep code compatible with Streamlit, pandas, plotly, numpy, and reportlab.
   - Avoid changing the app's core design unless it improves usability or reliability.
+  - Rise the Version Number in Format v1.00.03 on every Codechange

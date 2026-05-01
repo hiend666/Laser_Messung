@@ -1,10 +1,11 @@
-# pip install streamlit pandas plotly kaleido reportlab
+# pip install streamlit pandas plotly scipy kaleido reportlab
 # streamlit run app.py
 import io
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+from scipy.signal import savgol_filter
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -55,6 +56,10 @@ defaults = {
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
     'crop_end': None,
+    'show_velocity': False,
+    'window_length': 50,
+    'show_acceleration': False,
+    'window_length_accel': 75,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -229,11 +234,33 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
                     xa, xb, ya, yb, show_v_avg,
                     t_vs, y_vs, t_ve, y_ve, has_vmax,
                     t_a_mid, y_a_mid, has_amax,
-                    show_rect_fit=False, rect_fit=None) -> bytes:
+                    show_rect_fit=False, rect_fit=None, show_velocity=False, window_length=21, show_acceleration=False, window_length_accel=21) -> bytes:
     # Y-Achse: 15 % über Maximalwert
     y_max_e = float(df[[s1_name, s2_name]].max().max())
     y_min_e = float(df[[s1_name, s2_name]].min().min())
     y_range_e = [y_min_e, y_max_e + (y_max_e - y_min_e) * 0.15]
+    # Geschwindigkeit berechnen
+    if show_velocity and len(df) > 1:
+        arr = df[active_sensor].values
+        dt_step_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / 1000.0  # s
+        if window_length >= len(arr):
+            window_length = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+        if window_length % 2 == 0:
+            window_length -= 1
+        velocity = savgol_filter(arr, window_length, 3, deriv=1, delta=dt_step_s) / 1000.0  # mm/s
+    else:
+        velocity = None
+    # Beschleunigung berechnen
+    if show_acceleration and len(df) > 1:
+        arr = df[active_sensor].values
+        dt_step_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / 1000.0  # s
+        if window_length_accel >= len(arr):
+            window_length_accel = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+        if window_length_accel % 2 == 0:
+            window_length_accel -= 1
+        acceleration = savgol_filter(arr, window_length_accel, 3, deriv=2, delta=dt_step_s) / 1_000_000.0  # m/s²
+    else:
+        acceleration = None
     export_fig = go.Figure()
     export_fig.add_trace(go.Scatter(
         x=df['Zeit (ms)'], y=df[s1_name],
@@ -300,6 +327,20 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
             marker=dict(color='orange', size=14, symbol='cross',
                         line=dict(color='orange', width=2)),
         ))
+    if show_velocity and velocity is not None:
+        export_fig.add_trace(go.Scatter(
+            x=df['Zeit (ms)'], y=velocity,
+            name='Geschwindigkeit',
+            yaxis='y2',
+            line=dict(color='purple'),
+        ))
+    if show_acceleration and acceleration is not None:
+        export_fig.add_trace(go.Scatter(
+            x=df['Zeit (ms)'], y=acceleration,
+            name='Beschleunigung',
+            yaxis='y3',
+            line=dict(color='orange'),
+        ))
     export_fig.update_layout(
         xaxis_title="Zeit (ms)",
         yaxis_title="Weg (µm)",
@@ -311,6 +352,29 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
         plot_bgcolor='white',
         paper_bgcolor='white',
     )
+    if show_velocity and velocity is not None:
+        export_fig.update_layout(
+            yaxis2=dict(
+                title='Geschwindigkeit (mm/s)',
+                overlaying='y',
+                side='right',
+                showgrid=False,
+            )
+        )
+    if show_acceleration and acceleration is not None:
+        a_min = float(np.nanmin(acceleration))
+        a_max = float(np.nanmax(acceleration))
+        y3_range = [min(a_min, 0.0), min(a_max, 15000.0)]
+        export_fig.update_layout(
+            yaxis3=dict(
+                title='Beschleunigung (m/s²)',
+                overlaying='y',
+                side='right',
+                showgrid=False,
+                position=0.85 if show_velocity else 1.0,
+                range=y3_range,
+            )
+        )
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
 
 
@@ -560,6 +624,24 @@ if uploaded_file:
         show_v_avg  = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False)
         show_rect_fit = st.sidebar.toggle("Best-fit Rechteck füllen", value=False,
                                           help="Zeigt vertikale Kanten und hellgrüne Füllung für alle erkannten Pulse.")
+        show_velocity = st.sidebar.toggle("Geschwindigkeit anzeigen", value=False,
+                                          help="Zeigt die Geschwindigkeit des ausgewählten Kanals mit zweiter Y-Achse rechts.")
+        if show_velocity:
+            window_length = st.sidebar.slider(
+                "Glättung Fenstergröße", 10, 90, step=1,
+                value=st.session_state.window_length,
+                key="window_length",
+                help="Ungerade Zahl für Savitzky-Golay-Filter (größer = glatter, aber weniger Details)."
+            )
+        show_acceleration = st.sidebar.toggle("Beschleunigung anzeigen", value=False,
+                                              help="Zeigt die Beschleunigung des ausgewählten Kanals mit dritter Y-Achse.")
+        if show_acceleration:
+            window_length_accel = st.sidebar.slider(
+                "Glättung Beschleunigung", 50, 120, step=1,
+                value=st.session_state.window_length_accel,
+                key="window_length_accel",
+                help="Ungerade Zahl für Savitzky-Golay-Filter (größer = glatter, aber weniger Details)."
+            )
         accel_falling = not st.sidebar.toggle("Falling / Rising", value=False,
                                           help="Falling = positive Beschleunigung (Weg/v steigt)\nRising = negative Beschleunigung (Weg/v nimmt ab)")
 
@@ -666,6 +748,32 @@ if uploaded_file:
         else:
             df_plot = df
 
+        # --- GESCHWINDIGKEIT BERECHNEN ---
+        if show_velocity and len(df_plot) > 1:
+            arr = df_plot[active_sensor].values
+            dt_step_s_plot = (df_plot['Zeit (ms)'].iloc[1] - df_plot['Zeit (ms)'].iloc[0]) / 1000.0  # s
+            window_length = st.session_state.window_length
+            if window_length >= len(arr):
+                window_length = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+            if window_length % 2 == 0:
+                window_length -= 1
+            velocity = savgol_filter(arr, window_length, 3, deriv=1, delta=dt_step_s_plot) / 1000.0  # mm/s
+        else:
+            velocity = None
+
+        # --- BESCHLEUNIGUNG BERECHNEN ---
+        if show_acceleration and len(df_plot) > 1:
+            arr = df_plot[active_sensor].values
+            dt_step_s_plot = (df_plot['Zeit (ms)'].iloc[1] - df_plot['Zeit (ms)'].iloc[0]) / 1000.0  # s
+            window_length_accel = st.session_state.window_length_accel
+            if window_length_accel >= len(arr):
+                window_length_accel = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+            if window_length_accel % 2 == 0:
+                window_length_accel -= 1
+            acceleration = savgol_filter(arr, window_length_accel, 3, deriv=2, delta=dt_step_s_plot) / 1_000_000.0  # m/s²
+        else:
+            acceleration = None
+
         # --- DIAGRAMM ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -731,6 +839,20 @@ if uploaded_file:
                 marker=dict(color='orange', size=14, symbol='cross',
                             line=dict(color='orange', width=2)),
             ))
+        if show_velocity and velocity is not None:
+            fig.add_trace(go.Scatter(
+                x=df_plot['Zeit (ms)'], y=velocity,
+                name='Geschwindigkeit',
+                yaxis='y2',
+                line=dict(color='purple'),
+            ))
+        if show_acceleration and acceleration is not None:
+            fig.add_trace(go.Scatter(
+                x=df_plot['Zeit (ms)'], y=acceleration,
+                name='Beschleunigung',
+                yaxis='y3',
+                line=dict(color='orange'),
+            ))
 
         # Y-Achse: 15 % über Maximalwert damit Legende den Graph nicht verdeckt
         y_max_plot = float(df_plot[[s1_name, s2_name]].max().max())
@@ -747,6 +869,29 @@ if uploaded_file:
             xaxis=dict(autorange=True, rangemode='nonnegative'),
             yaxis=dict(range=y_range_plot),
         )
+        if show_velocity and velocity is not None:
+            fig.update_layout(
+                yaxis2=dict(
+                    title='Geschwindigkeit (mm/s)',
+                    overlaying='y',
+                    side='right',
+                    showgrid=False,
+                )
+            )
+        if show_acceleration and acceleration is not None:
+            a_min = float(np.nanmin(acceleration))
+            a_max = float(np.nanmax(acceleration))
+            y3_range = [min(a_min, 0.0), min(a_max, 10000.0)]
+            fig.update_layout(
+                yaxis3=dict(
+                    title='Beschleunigung (m/s²)',
+                    overlaying='y',
+                    side='right',
+                    showgrid=False,
+                    position=0.85 if show_velocity else 1.0,
+                    range=y3_range,
+                )
+            )
         st.plotly_chart(fig, width="stretch", key="main_chart")
 
         # --- CURSOR-SLIDER (ms) ---
@@ -842,6 +987,10 @@ if uploaded_file:
                     t_a_mid, y_a_mid, has_amax,
                     show_rect_fit=show_rect_fit,
                     rect_fit=rect_fit,
+                    show_velocity=show_velocity,
+                    window_length=st.session_state.window_length,
+                    show_acceleration=show_acceleration,
+                    window_length_accel=st.session_state.window_length_accel,
                 )
                 stem = uploaded_file.name.rsplit('.', 1)[0]
                 if export_format == "PDF":
