@@ -359,12 +359,10 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
                 overlaying='y',
                 side='right',
                 showgrid=False,
+                range=[-3200, 3200],
             )
         )
     if show_acceleration and acceleration is not None:
-        a_min = float(np.nanmin(acceleration))
-        a_max = float(np.nanmax(acceleration))
-        y3_range = [max(a_min, -10000.0), min(a_max, 10000.0)]
         export_fig.update_layout(
             yaxis3=dict(
                 title='Beschleunigung (m/s²)',
@@ -372,7 +370,7 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
                 side='right',
                 showgrid=False,
                 position=0.85 if show_velocity else 1.0,
-                range=y3_range,
+                range=[-12000, 12000],
             )
         )
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
@@ -879,12 +877,10 @@ if uploaded_file:
                     overlaying='y',
                     side='right',
                     showgrid=False,
+                    range=[-3200, 3200],
                 )
             )
         if show_acceleration and acceleration is not None:
-            a_axis_min = float(np.nanmin(acceleration))
-            a_axis_max = float(np.nanmax(acceleration))
-            y3_range = [max(a_axis_min, -10000.0), min(a_axis_max, 10000.0)]
             fig.update_layout(
                 yaxis3=dict(
                     title='Beschleunigung (m/s²)',
@@ -892,7 +888,7 @@ if uploaded_file:
                     side='right',
                     showgrid=False,
                     position=0.85 if show_velocity else 1.0,
-                    range=y3_range,
+                    range=[-12000, 12000],
                 )
             )
         st.plotly_chart(fig, width="stretch", key="main_chart")

@@ -1,7 +1,7 @@
 streamlit 
 pandas 
 plotly 
-kaleido 
+kaleido==0.2.1
 scipy
 reportlab
 openai
