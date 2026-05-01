@@ -13,7 +13,7 @@ from reportlab.lib.units import mm
 
 import datetime
 
-VERSION = "v1.00.02"
+VERSION = "v1.00.03"
 
 st.set_page_config(layout="wide", page_title="Messdaten Auswertung")
 st.markdown("""
@@ -415,7 +415,6 @@ with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file
     )
     use_us = st.toggle(
         "Hz / µs",
-        value=(sample_rate_unit == "µs"),
         key="sample_rate_unit_toggle",
         on_change=update_sample_rate_unit,
         label_visibility="visible",
