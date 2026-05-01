@@ -13,7 +13,7 @@ from reportlab.lib.units import mm
 
 import datetime
 
-st.set_page_config(layout="wide", page_title="Messdaten Auswertung Pro")
+st.set_page_config(layout="wide", page_title="Messdaten Auswertung")
 st.markdown("""
     <style>
     div[data-baseweb="slider"] > div > div > div {
@@ -43,7 +43,9 @@ defaults = {
     'xb_nw': 0.001,   # Widget-Key: number_input XB
     'zoom_token': 0,
     'last_file_name': None,
-    'sample_rate': 392156.0,
+    'sample_rate': 2.55,
+    'sample_rate_unit': 'µs',
+    'sample_rate_unit_toggle': True,
     'skip_rows': 12,
     'ch1_name': 'Festo',
     'ch2_name': 'DST',
@@ -127,6 +129,14 @@ def update_off1_from_slider():
 
 def update_off2_from_slider():
     st.session_state.off2 = st.session_state.off2_slider
+
+def update_sample_rate_unit():
+    new_unit = "µs" if st.session_state.sample_rate_unit_toggle else "Hz"
+    old_unit = st.session_state.sample_rate_unit
+    if new_unit != old_unit:
+        if st.session_state.sample_rate > 0:
+            st.session_state.sample_rate = 1_000_000.0 / st.session_state.sample_rate
+        st.session_state.sample_rate_unit = new_unit
 
 
 # --- SCHNELLE INDEX-BERECHNUNG (O(1)) ---
@@ -274,19 +284,40 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
 # ===== HAUPTBEREICH =====
 
 # --- SIDEBAR: IMPORT ---
-st.sidebar.header("1. Daten-Import")
-uploaded_file = st.sidebar.file_uploader("CSV Datei auswählen", type="csv")
+st.sidebar.header("1. CSV-Import")
+uploaded_file = st.sidebar.file_uploader("upload", type="csv", label_visibility="collapsed")
 
-with st.sidebar.expander("⚙️ Import-Einstellungen", expanded=not bool(uploaded_file)):
-    sample_rate = st.number_input(
-        "Samplerate (Hz)", min_value=0.1, format="%.1f", key="sample_rate"
+with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file)):
+    sample_rate_unit = st.session_state.sample_rate_unit
+    sample_rate_input = st.number_input(
+        "Abtastung",
+        min_value=0.0001,
+        format="%.3f" if sample_rate_unit == "µs" else "%.1f",
+        value=st.session_state.sample_rate,
+        key="sample_rate",
+        help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
     )
+    use_us = st.toggle(
+        "Hz / µs",
+        value=(sample_rate_unit == "µs"),
+        key="sample_rate_unit_toggle",
+        on_change=update_sample_rate_unit,
+        label_visibility="visible",
+    )
+    sample_rate_unit = "µs" if use_us else "Hz"
+    if st.session_state.sample_rate_unit != sample_rate_unit:
+        st.session_state.sample_rate_unit = sample_rate_unit
+    if sample_rate_unit == "Hz":
+        sample_rate = sample_rate_input
+    else:
+        sample_rate = 1_000_000.0 / sample_rate_input
+
     st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows")
     st.text_input("Kanal 1 Name", key="ch1_name")
     st.text_input("Kanal 2 Name", key="ch2_name")
 
 if sample_rate <= 0:
-    st.sidebar.error("Samplerate muss > 0 Hz sein.")
+    st.sidebar.error("Samplerate muss größer als 0 sein.")
     st.stop()
 
 if uploaded_file:
