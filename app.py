@@ -13,6 +13,8 @@ from reportlab.lib.units import mm
 
 import datetime
 
+VERSION = "v1.00.02"
+
 st.set_page_config(layout="wide", page_title="Messdaten Auswertung")
 st.markdown("""
     <style>
@@ -49,6 +51,7 @@ defaults = {
     'skip_rows': 12,
     'ch1_name': 'Festo',
     'ch2_name': 'DST',
+    'max_samples': 8000,
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
     'crop_end': None,
@@ -60,15 +63,16 @@ for key, val in defaults.items():
 
 # --- CSV LADEN MIT CACHE ---
 @st.cache_data
-def load_csv(file_bytes: bytes, skip_rows: int, ch1: str, ch2: str) -> pd.DataFrame:
+def load_csv(file_bytes: bytes, skip_rows: int, max_samples: int, ch1: str, ch2: str) -> pd.DataFrame:
     """Liest CSV im Roh- oder Sauber-Format und gibt DataFrame mit zwei Messspalten zurück."""
+    nrows = max_samples if max_samples > 0 else None
     probe = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
                         skiprows=skip_rows, nrows=1)
     first_cell = str(probe.iloc[0, 0]).strip()
     try:
         float(first_cell)
         df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.',
-                         header=None, skiprows=skip_rows)
+                         header=None, skiprows=skip_rows, nrows=nrows)
         df = df.dropna(axis=1, how='all')
         data_cols = [c for c in df.columns if df[c].dtype in ['float64', 'float32']]
         if len(data_cols) < 2:
@@ -76,7 +80,8 @@ def load_csv(file_bytes: bytes, skip_rows: int, ch1: str, ch2: str) -> pd.DataFr
         df = df[data_cols[:2]].copy()
         df.columns = [ch1, ch2]
     except ValueError as exc:
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.')
+        df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.',
+                         nrows=nrows)
         df = df.dropna(axis=1, how='all')
         sensor_cols = [c for c in df.columns if c != 'Zeit (s)']
         if len(sensor_cols) < 2:
@@ -107,6 +112,80 @@ def apply_offsets(
         s1: raw_s1 + off1,
         s2: raw_s2 + off2,
     })
+
+
+@st.cache_data
+def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
+    """Berechnet ein einfaches Rechteck-Fit für ein stark verrauschtes Rechtecksignal."""
+    if len(signal) == 0:
+        return None
+
+    valid = ~np.isnan(signal)
+    if not np.any(valid):
+        return None
+
+    signal = signal[valid]
+    zeit = zeit[valid]
+
+    min_val = float(np.nanpercentile(signal, 5))
+    max_val = float(np.nanpercentile(signal, 95))
+    if max_val <= min_val:
+        return None
+
+    threshold = 0.5 * (min_val + max_val)
+    low_center = min_val
+    high_center = max_val
+
+    for _ in range(5):
+        high_mask = signal >= threshold
+        low_mask = signal < threshold
+        if not np.any(high_mask) or not np.any(low_mask):
+            break
+        new_low = float(np.median(signal[low_mask]))
+        new_high = float(np.median(signal[high_mask]))
+        if new_high <= new_low:
+            break
+        new_threshold = 0.5 * (new_low + new_high)
+        if np.isclose(new_threshold, threshold):
+            low_center = new_low
+            high_center = new_high
+            threshold = new_threshold
+            break
+        low_center = new_low
+        high_center = new_high
+        threshold = new_threshold
+
+    high_mask = signal >= threshold
+    low_mask = signal < threshold
+    if not np.any(high_mask) or not np.any(low_mask):
+        return None
+
+    y_low = low_center
+    y_high = high_center
+
+    runs = []
+    start = 0
+    while start < len(high_mask):
+        if high_mask[start]:
+            end = start
+            while end < len(high_mask) and high_mask[end]:
+                end += 1
+            runs.append({
+                't_start': float(zeit[start]),
+                't_end': float(zeit[end - 1]),
+            })
+            start = end
+        else:
+            start += 1
+
+    if not runs:
+        return None
+
+    return {
+        'runs': runs,
+        'y_low': y_low,
+        'y_high': y_high,
+    }
 
 
 # --- CALLBACKS ---
@@ -149,7 +228,8 @@ def get_idx_at_x(x_ms: float, sample_rate: float, max_idx: int) -> int:
 def build_chart_png(df, s1_name, s2_name, active_sensor,
                     xa, xb, ya, yb, show_v_avg,
                     t_vs, y_vs, t_ve, y_ve, has_vmax,
-                    t_a_mid, y_a_mid, has_amax) -> bytes:
+                    t_a_mid, y_a_mid, has_amax,
+                    show_rect_fit=False, rect_fit=None) -> bytes:
     # Y-Achse: 15 % über Maximalwert
     y_max_e = float(df[[s1_name, s2_name]].max().max())
     y_min_e = float(df[[s1_name, s2_name]].min().min())
@@ -171,6 +251,42 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
             mode='lines+markers', name='v-Schnitt',
             line=dict(color='green', width=2, dash='dot'),
         ))
+    if rect_fit is not None:
+        df_min_time = df['Zeit (ms)'].min()
+        df_max_time = df['Zeit (ms)'].max()
+        for idx, run in enumerate(rect_fit['runs']):
+            # Clippe die Rechtecke an den Export-Bereich
+            clipped_start = max(run['t_start'], df_min_time)
+            clipped_end = min(run['t_end'], df_max_time)
+            if clipped_start < clipped_end:
+                export_fig.add_trace(go.Scatter(
+                    x=[clipped_start, clipped_end],
+                    y=[rect_fit['y_high'], rect_fit['y_high']],
+                    mode='lines',
+                    name='Rechteck-Fit' if idx == 0 else None,
+                    showlegend=(idx == 0),
+                    line=dict(color='lime', dash='dash', width=2),
+                ))
+                if show_rect_fit:
+                    export_fig.add_shape(
+                        type='line',
+                        x0=clipped_start, x1=clipped_start,
+                        y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                        line=dict(color='lime', width=1, dash='dash'),
+                    )
+                    export_fig.add_shape(
+                        type='line',
+                        x0=clipped_end, x1=clipped_end,
+                        y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                        line=dict(color='lime', width=1, dash='dash'),
+                    )
+                    export_fig.add_shape(
+                        type='rect',
+                        x0=clipped_start, x1=clipped_end,
+                        y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                        line=dict(width=0),
+                        fillcolor='rgba(0,255,0,0.08)',
+                    )
     if has_vmax and t_vs is not None:
         export_fig.add_trace(go.Scatter(
             x=[t_vs, t_ve], y=[y_vs, y_ve],
@@ -285,6 +401,7 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
 
 # --- SIDEBAR: IMPORT ---
 st.sidebar.header("1. CSV-Import")
+st.sidebar.caption(f"Version: {VERSION}")
 uploaded_file = st.sidebar.file_uploader("upload", type="csv", label_visibility="collapsed")
 
 with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file)):
@@ -312,6 +429,8 @@ with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file
         sample_rate = 1_000_000.0 / sample_rate_input
 
     st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows")
+    st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
+                    help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle)")
     st.text_input("Kanal 1 Name", key="ch1_name")
     st.text_input("Kanal 2 Name", key="ch2_name")
 
@@ -325,7 +444,7 @@ if uploaded_file:
     ch2 = st.session_state.ch2_name or 'Kanal 2'
 
     try:
-        df_raw = load_csv(file_bytes, st.session_state.skip_rows, ch1, ch2)
+        df_raw = load_csv(file_bytes, st.session_state.skip_rows, st.session_state.max_samples, ch1, ch2)
     except ValueError as e:
         st.error(f"Fehler beim Laden: {e}")
         st.stop()
@@ -440,8 +559,15 @@ if uploaded_file:
             step=0.01, format="%.2f ms",
         )
         show_v_avg  = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False)
+        show_rect_fit = st.sidebar.toggle("Best-fit Rechteck füllen", value=False,
+                                          help="Zeigt vertikale Kanten und hellgrüne Füllung für alle erkannten Pulse.")
         accel_falling = not st.sidebar.toggle("Falling / Rising", value=False,
                                           help="Falling = positive Beschleunigung (Weg/v steigt)\nRising = negative Beschleunigung (Weg/v nimmt ab)")
+
+        rect_fit = compute_best_fit_rectangle(
+            df_full['Zeit (ms)'].values,
+            df_full[active_sensor].values,
+        )
 
         # --- BERECHNUNGEN ---
         # xa/xb in ms; Crop-df hat ebenfalls ms-Zeitachse ab min_zeit
@@ -559,6 +685,40 @@ if uploaded_file:
                 mode='lines+markers', name='v-Schnitt',
                 line=dict(color='green', width=2, dash='dot'),
             ))
+        if rect_fit is not None:
+            for idx, run in enumerate(rect_fit['runs']):
+                # Clippe die Rechtecke an den sichtbaren Bereich
+                clipped_start = max(run['t_start'], min_zeit)
+                clipped_end = min(run['t_end'], max_zeit)
+                if clipped_start < clipped_end:
+                    fig.add_trace(go.Scatter(
+                        x=[clipped_start, clipped_end],
+                        y=[rect_fit['y_high'], rect_fit['y_high']],
+                        mode='lines',
+                        name='Rechteck-Fit' if idx == 0 else None,
+                        showlegend=(idx == 0),
+                        line=dict(color='lime', dash='dash', width=2),
+                    ))
+                    if show_rect_fit:
+                        fig.add_shape(
+                            type='line',
+                            x0=clipped_start, x1=clipped_start,
+                            y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                            line=dict(color='lime', width=1, dash='dash'),
+                        )
+                        fig.add_shape(
+                            type='line',
+                            x0=clipped_end, x1=clipped_end,
+                            y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                            line=dict(color='lime', width=1, dash='dash'),
+                        )
+                        fig.add_shape(
+                            type='rect',
+                            x0=clipped_start, x1=clipped_end,
+                            y0=rect_fit['y_low'], y1=rect_fit['y_high'],
+                            line=dict(width=0),
+                            fillcolor='rgba(0,255,0,0.08)',
+                        )
         if has_vmax:
             fig.add_trace(go.Scatter(
                 x=[t_vs, t_ve], y=[y_vs, y_ve],
@@ -649,18 +809,22 @@ if uploaded_file:
         r4.metric("v-max (Peak)",        f"{v_max:.1f} mm/s"          if not np.isnan(v_max) else "N/A")
 
         r5, r6, r7, r8 = st.columns(4)
+        hub_um = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
         r5.metric("Frequenz Δt (A-B)",   f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A")
         r6.metric("Δv Cursor (A B)",     f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A")
+        r7.metric("Hub Best-fit",        f"{hub_um:.1f} µm"        if not np.isnan(hub_um) else "N/A")
         r8.metric(a_label,               f"{a_max:.0f} m/s²"          if not np.isnan(a_max) else "N/A")
 
         # --- EXPORT ---
         st.sidebar.header("3. Export")
+        hub_um = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
         metrics = {
             "XA (ms)":              f"{xa:.3f}",
             "XB (ms)":              f"{xb:.3f}",
             "Δt (A-B)":             f"{dt_val_ms:.3f} ms",
             "Δs (A-B)":             f"{dy_um:.1f} µm",
             "v-mid (A-B)":          f"{v_avg:.1f} mm/s",
+            "Hub Best-fit":         f"{hub_um:.1f} µm"        if not np.isnan(hub_um) else "N/A",
             "v-max (Peak)":         f"{v_max:.1f} mm/s"        if not np.isnan(v_max) else "N/A",
             "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"        if not np.isnan(freq_hz) else "N/A",
             "Δv Cursor (A B)":      f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A",
@@ -677,6 +841,8 @@ if uploaded_file:
                     xa, xb, ya, yb, show_v_avg,
                     t_vs, y_vs, t_ve, y_ve, has_vmax,
                     t_a_mid, y_a_mid, has_amax,
+                    show_rect_fit=show_rect_fit,
+                    rect_fit=rect_fit,
                 )
                 stem = uploaded_file.name.rsplit('.', 1)[0]
                 if export_format == "PDF":
