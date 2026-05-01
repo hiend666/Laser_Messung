@@ -14,7 +14,7 @@ from reportlab.lib.units import mm
 
 import datetime
 
-VERSION = "v1.00.03"
+VERSION = "v1.00.04"
 
 st.set_page_config(layout="wide", page_title="Messdaten Auswertung")
 st.markdown("""
@@ -364,7 +364,7 @@ def build_chart_png(df, s1_name, s2_name, active_sensor,
     if show_acceleration and acceleration is not None:
         a_min = float(np.nanmin(acceleration))
         a_max = float(np.nanmax(acceleration))
-        y3_range = [min(a_min, 0.0), min(a_max, 15000.0)]
+        y3_range = [max(a_min, -10000.0), min(a_max, 10000.0)]
         export_fig.update_layout(
             yaxis3=dict(
                 title='Beschleunigung (m/s²)',
@@ -692,52 +692,56 @@ if uploaded_file:
         a_max    = float('nan')
 
         if idx_end > idx_start:
-            df_slice    = df.iloc[idx_start:idx_end + 1]
-            window_size = max(2, int(v_time_base_ms / 1000.0 * sample_rate))
-            dt_step_s   = 1.0 / sample_rate          # s pro Sample
-            dt_step_ms  = dt_step_s * 1000.0         # ms pro Sample
-            arr         = df_slice[active_sensor].values
+            df_slice  = df.iloc[idx_start:idx_end + 1]
+            arr       = df_slice[active_sensor].values
+            dt_step_s = 1.0 / sample_rate
 
-            if len(arr) > window_size:
-                # diffs[i] = Durchschnittsgeschwindigkeit über Fenster i…i+window_size [mm/s]
-                # Δy [µm→mm] / (window_size * dt [s])
-                diffs     = (arr[window_size:] - arr[:-window_size]) / 1000.0 / (window_size * dt_step_s)
-                abs_diffs = np.abs(diffs)
-                n_diffs   = len(diffs)
+            # --- v-max: Savitzky-Golay-gefilterte Geschwindigkeit, Mittelwert im Zeitbasis-Fenster ---
+            wl_v = st.session_state.window_length
+            if wl_v >= len(arr):
+                wl_v = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+            if wl_v % 2 == 0:
+                wl_v -= 1
 
-                # --- v-max ---
-                v_max      = float(np.max(abs_diffs))
-                peak_rel   = int(np.argmax(abs_diffs))
-                peak_end   = idx_start + window_size + peak_rel
-                peak_start = peak_end - window_size
-                if 0 <= peak_start <= max_idx and 0 <= peak_end <= max_idx:
-                    t_vs = df.loc[peak_start, 'Zeit (ms)']
-                    y_vs = df.loc[peak_start, active_sensor]
-                    t_ve = df.loc[peak_end,   'Zeit (ms)']
-                    y_ve = df.loc[peak_end,   active_sensor]
+            if wl_v >= 5:
+                vel_filt = savgol_filter(arr, wl_v, 3, deriv=1, delta=dt_step_s) / 1000.0  # mm/s
+                abs_vel  = np.abs(vel_filt)
+                peak_i   = int(np.argmax(abs_vel))
+                i0 = max(0, peak_i - half_win)
+                i1 = min(len(arr) - 1, peak_i + half_win)
+                v_max    = float(np.mean(abs_vel[i0:i1 + 1]))
+
+                abs_i0 = idx_start + i0
+                abs_i1 = idx_start + i1
+                if 0 <= abs_i0 <= max_idx and 0 <= abs_i1 <= max_idx:
+                    t_vs = df.loc[abs_i0, 'Zeit (ms)']
+                    y_vs = df.loc[abs_i0, active_sensor]
+                    t_ve = df.loc[abs_i1, 'Zeit (ms)']
+                    y_ve = df.loc[abs_i1, active_sensor]
                     has_vmax = True
 
-                # --- a-max: Δv zwischen zwei Fenstern im Abstand window_size ---
-                # Vorzeichenbehaftete Beschleunigung [m/s²]:
-                # Δv [mm/s] / (window_size * dt [s]) / 1000 → m/s²
-                # Falling (positiv): Weg nimmt ab → dv < 0 → accel_signed < 0 → wir suchen Minimum
-                # Rising  (negativ): Weg nimmt zu → dv > 0 → accel_signed > 0 → wir suchen Maximum
-                if n_diffs > window_size:
-                    accel_signed = (diffs[window_size:] - diffs[:-window_size]) / (window_size * dt_step_s) / 1000.0
-                    if accel_falling:
-                        # Falling: stärkste positive Beschleunigung (Weg/v steigt)
-                        a_peak_i = int(np.argmax(accel_signed))
-                        a_max    = float(accel_signed[a_peak_i])   # positiv
-                    else:
-                        # Rising: stärkste negative Beschleunigung (Weg/v nimmt ab)
-                        a_peak_i = int(np.argmin(accel_signed))
-                        a_max    = float(accel_signed[a_peak_i])   # negativ
+            # --- a-max: Savitzky-Golay-gefilterte Beschleunigung, Mittelwert im Zeitbasis-Fenster ---
+            wl_a = st.session_state.window_length_accel
+            if wl_a >= len(arr):
+                wl_a = len(arr) if len(arr) % 2 == 1 else len(arr) - 1
+            if wl_a % 2 == 0:
+                wl_a -= 1
 
-                    # Kreuz-Mittelpunkt: Mitte zwischen den beiden Fenstern
-                    mid_i   = int(np.clip(idx_start + a_peak_i + window_size, 0, max_idx))
-                    t_a_mid = float(df.loc[mid_i, 'Zeit (ms)'])
-                    y_a_mid = float(df.loc[mid_i, active_sensor])
-                    has_amax = True
+            if wl_a >= 5:
+                accel_filt = savgol_filter(arr, wl_a, 3, deriv=2, delta=dt_step_s) / 1_000_000.0  # m/s²
+                if accel_falling:
+                    peak_a_i = int(np.argmax(accel_filt))
+                else:
+                    peak_a_i = int(np.argmin(accel_filt))
+
+                ia0   = max(0, peak_a_i - half_win)
+                ia1   = min(len(arr) - 1, peak_a_i + half_win)
+                a_max = float(np.mean(accel_filt[ia0:ia1 + 1]))
+
+                mid_i   = int(np.clip(idx_start + peak_a_i, 0, max_idx))
+                t_a_mid = float(df.loc[mid_i, 'Zeit (ms)'])
+                y_a_mid = float(df.loc[mid_i, active_sensor])
+                has_amax = True
 
         # --- DOWNSAMPLING FÜR GROSSE DATEIEN ---
         MAX_PLOT_POINTS = 5000
@@ -878,9 +882,9 @@ if uploaded_file:
                 )
             )
         if show_acceleration and acceleration is not None:
-            a_min = float(np.nanmin(acceleration))
-            a_max = float(np.nanmax(acceleration))
-            y3_range = [min(a_min, 0.0), min(a_max, 10000.0)]
+            a_axis_min = float(np.nanmin(acceleration))
+            a_axis_max = float(np.nanmax(acceleration))
+            y3_range = [max(a_axis_min, -10000.0), min(a_axis_max, 10000.0)]
             fig.update_layout(
                 yaxis3=dict(
                     title='Beschleunigung (m/s²)',
