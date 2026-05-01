@@ -293,7 +293,6 @@ with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file
         "Abtastung",
         min_value=0.0001,
         format="%.3f" if sample_rate_unit == "µs" else "%.1f",
-        value=st.session_state.sample_rate,
         key="sample_rate",
         help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
     )
