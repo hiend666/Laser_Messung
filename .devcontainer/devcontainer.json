@@ -2,6 +2,7 @@
   "name": "Python 3",
   "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
   "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   },
   "mounts": [
@@ -17,7 +18,6 @@
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
-        "Continue.continue"
       ],
        
     "codespaces": {
@@ -29,6 +29,7 @@
   },
   "updateContentCommand": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && echo '✅ venv erstellt und Requirements installiert'",
   "postStartCommand": "source /workspaces/Laser_Messung/.venv/bin/activate && streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false",
+  "postCreateCommand": "npm install -g @lmstudio/lms",
   "portsAttributes": {
     "8501": {
       "label": "Application",

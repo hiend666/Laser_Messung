@@ -27,7 +27,7 @@ VERSION = "v1.00.06"
 # ---------------------------------------------------------------------------
 
 V_ACHSE_LIMIT_MM_S = 3_200    # Feste Y-Grenze Geschwindigkeitsachse  ± mm/s
-A_ACHSE_LIMIT_M_S2 = 12_000   # Feste Y-Grenze Beschleunigungsachse   ± m/s²
+A_ACHSE_LIMIT_M_S2 = 20_000   # Feste Y-Grenze Beschleunigungsachse   ± m/s²
 
 MAX_PLOT_PUNKTE    = 5_000     # Downsampling-Schwelle für interaktives Diagramm
 SAVGOL_POLYNOM     = 3         # Polynomgrad für alle Savitzky-Golay-Filter
@@ -109,6 +109,8 @@ defaults = {
     'show_acceleration': False,
     'window_length_accel': 75,
     'sop_percent': 80,
+    'v_axis_limit': 3_200,
+    'a_axis_limit': 20_000,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -147,7 +149,6 @@ def _berechne_sg_ableitung(
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-@st.cache_data
 def load_data(
     file_bytes: bytes,
     skip_rows: int,
@@ -168,10 +169,11 @@ def load_data(
         content = file_bytes.decode('utf-8', errors='ignore')
 
         # Finde den Beginn der Daten nach "####Test Data####"
-        lines = content.split('\n')
+        # splitlines() verarbeitet \n, \r\n und \r korrekt
+        lines = content.splitlines()
         data_start_idx = -1
         for i, line in enumerate(lines):
-            if line.strip() == "####Test Data####":
+            if "####Test Data####" in line:
                 # Daten beginnen zwei Zeilen später (nach "Stroke Data" und Header)
                 data_start_idx = i + 2
                 break
@@ -416,6 +418,10 @@ def update_sample_rate_for_file_type():
         st.session_state.sample_rate = 2.55
         st.session_state.sample_rate_unit = "µs"
         st.session_state.sample_rate_unit_toggle = True
+        st.session_state.ch1_name = 'Hub'
+        st.session_state.ch2_name = ''
+        st.session_state.ch3_name = ''
+        st.session_state.ch4_name = ''
     # Für CSV plain bleiben die Einstellungen wie sie sind
 
 
@@ -686,7 +692,7 @@ def build_chart_png(
             yaxis2=dict(
                 title='Geschwindigkeit (mm/s)',
                 overlaying='y', side='right', showgrid=False,
-                range=[-V_ACHSE_LIMIT_MM_S, V_ACHSE_LIMIT_MM_S],
+                range=[-st.session_state.v_axis_limit, st.session_state.v_axis_limit],
             )
         )
     if show_acceleration and acceleration is not None:
@@ -695,7 +701,7 @@ def build_chart_png(
                 title='Beschleunigung (m/s²)',
                 overlaying='y', side='right', showgrid=False,
                 position=0.85 if show_velocity else 1.0,
-                range=[-A_ACHSE_LIMIT_M_S2, A_ACHSE_LIMIT_M_S2],
+                range=[-st.session_state.a_axis_limit, st.session_state.a_axis_limit],
             )
         )
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
@@ -798,17 +804,7 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
 st.sidebar.header("1. Import")
 st.sidebar.caption(f"Version: {VERSION}")
 
-# Dateityp-Auswahl
-file_type = st.sidebar.radio(
-    "Dateityp",
-    ["CSV plain", "Hubmessung"],
-    index=0,
-    key="file_type_radio",
-    help="CSV plain: Standard-CSV mit Komma-Trennung. Hubmessung: TXT-Datei mit TAB-Trennung und fester Samplerate.",
-    on_change=update_sample_rate_for_file_type,
-)
-
-# Dateifilter basierend auf Typ
+file_type = st.session_state.get('file_type_radio', 'CSV plain')
 file_extensions = ["csv"] if file_type == "CSV plain" else ["txt"]
 
 uploaded_file = st.sidebar.file_uploader(
@@ -816,41 +812,138 @@ uploaded_file = st.sidebar.file_uploader(
     help="Datei hochladen. CSV plain: Komma-getrennt. Hubmessung: TAB-getrennt mit fester Samplerate.",
 )
 
-with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file)):
-    sample_rate_unit  = st.session_state.sample_rate_unit
-    sample_rate_input = st.number_input(
-        "Abtastung",
-        min_value=0.0001,
-        format="%.3f" if sample_rate_unit == "µs" else "%.1f",
-        key="sample_rate",
-        help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
-    )
-    use_us = st.toggle(
-        "Hz / µs",
-        key="sample_rate_unit_toggle",
-        on_change=update_sample_rate_unit,
-        label_visibility="visible",
-        help="Eingabeeinheit umschalten: µs = Zeitabstand pro Sample, Hz = Abtastfrequenz.",
-    )
-    sample_rate_unit = "µs" if use_us else "Hz"
-    if st.session_state.sample_rate_unit != sample_rate_unit:
-        st.session_state.sample_rate_unit = sample_rate_unit
-    sample_rate = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
+with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
 
-    st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
-                    help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
-    st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
-                    help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
+    with st.expander("Dateityp", expanded=True):
+        st.radio(
+            "Dateityp",
+            ["CSV plain", "Hubmessung"],
+            key="file_type_radio",
+            help="CSV plain: Standard-CSV mit Komma-Trennung. Hubmessung: TXT-Datei mit TAB-Trennung und fester Samplerate.",
+            on_change=update_sample_rate_for_file_type,
+        )
 
-    st.markdown("**Kanäle** – leeres Feld = Kanal nicht einlesen")
-    st.text_input("Kanal 1 Name", key="ch1_name",
-                  help="Kanalbezeichnung für Diagramm, Legende und Export.")
-    st.text_input("Kanal 2 Name", key="ch2_name",
-                  help="Kanalbezeichnung für Diagramm, Legende und Export.")
-    st.text_input("Kanal 3 Name", key="ch3_name",
-                  help="Leer lassen um Kanal 3 nicht einzulesen.")
-    st.text_input("Kanal 4 Name", key="ch4_name",
-                  help="Leer lassen um Kanal 4 nicht einzulesen.")
+    with st.expander("Einlesen", expanded=True):
+        sample_rate_unit  = st.session_state.sample_rate_unit
+        sample_rate_input = st.number_input(
+            "Abtastung",
+            min_value=0.0001,
+            format="%.3f" if sample_rate_unit == "µs" else "%.1f",
+            key="sample_rate",
+            help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
+        )
+        use_us = st.toggle(
+            "Hz / µs",
+            key="sample_rate_unit_toggle",
+            on_change=update_sample_rate_unit,
+            label_visibility="visible",
+            help="Eingabeeinheit umschalten: µs = Zeitabstand pro Sample, Hz = Abtastfrequenz.",
+        )
+        sample_rate_unit = "µs" if use_us else "Hz"
+        if st.session_state.sample_rate_unit != sample_rate_unit:
+            st.session_state.sample_rate_unit = sample_rate_unit
+        sample_rate = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
+
+        st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
+                        help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
+        st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
+                        help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
+
+    with st.expander("Kanäle", expanded=True):
+        st.caption("Leeres Feld = Kanal nicht einlesen")
+        st.text_input("Kanal 1 Name", key="ch1_name",
+                      help="Leer lassen um Kanal 1 nicht einzulesen.")
+        st.text_input("Kanal 2 Name", key="ch2_name",
+                      help="Leer lassen um Kanal 2 nicht einzulesen.")
+        st.text_input("Kanal 3 Name", key="ch3_name",
+                      help="Leer lassen um Kanal 3 nicht einzulesen.")
+        st.text_input("Kanal 4 Name", key="ch4_name",
+                      help="Leer lassen um Kanal 4 nicht einzulesen.")
+
+    if uploaded_file:
+        _kanal_cfg = [
+            st.session_state.ch1_name.strip(),
+            st.session_state.ch2_name.strip(),
+            st.session_state.ch3_name.strip(),
+            st.session_state.ch4_name.strip(),
+        ]
+        kanal_namen_tuple = tuple(n for n in _kanal_cfg if n)
+
+        if len(kanal_namen_tuple) < 1:
+            st.sidebar.error("Mindestens ein Kanalname muss angegeben werden.")
+            st.stop()
+
+        sensor_namen = list(kanal_namen_tuple)
+        file_bytes = uploaded_file.getvalue()
+
+        try:
+            df_raw = load_data(
+                file_bytes, st.session_state.skip_rows,
+                st.session_state.max_samples, kanal_namen_tuple, file_type,
+            )
+        except ValueError as e:
+            st.error(f"Fehler beim Laden: {e}")
+            st.stop()
+
+        if st.session_state.last_file_name != uploaded_file.name:
+            total_time_ms = len(df_raw) / sample_rate * 1000.0
+            for i, name in enumerate(sensor_namen, 1):
+                off_init = float(df_raw[name].min()) * -1.0
+                st.session_state[f'off{i}']        = off_init
+                st.session_state[f'off{i}_slider'] = off_init
+            for i in range(len(sensor_namen) + 1, 5):
+                st.session_state[f'off{i}']        = 0.0
+                st.session_state[f'off{i}_slider'] = 0.0
+            st.session_state.xa             = total_time_ms * 0.30
+            st.session_state.xb             = total_time_ms * 0.50
+            st.session_state.crop_start     = None
+            st.session_state.crop_end       = None
+            st.session_state.zoom_token    += 1
+            st.session_state.last_file_name = uploaded_file.name
+            st.rerun()
+
+        with st.expander("Manuelle Offsets (Y)", expanded=True):
+            with st.container(border=True):
+                st.subheader("Set to 0")
+                n_ch     = len(sensor_namen)
+                btn_cols = st.columns(n_ch)
+                for i, name in enumerate(sensor_namen):
+                    if btn_cols[i].button(f"{name}", use_container_width=True,
+                                          help="Setzt den Offset so, dass der Minimalwert auf 0 µm liegt.", key=f"auto0_{i}"):
+                        val = float(df_raw[name].min()) * -1.0
+                        st.session_state[f'off{i+1}']        = val
+                        st.session_state[f'off{i+1}_slider'] = val
+                        st.rerun()
+
+            st.markdown("")
+            for i, name in enumerate(sensor_namen):
+                st.slider(
+                    f"Offset {name}", -600.0, 600.0, step=0.1,
+                    key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
+                    help="Y-Versatz für diesen Kanal in µm (Bereich ±600 µm).",
+                )
+
+        offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
+    else:
+        df_raw = None
+        sensor_namen = []
+        offs = tuple()
+
+    with st.expander("Diagramm-Grenzwerte", expanded=False):
+        st.number_input(
+            "Geschwindigkeit ± (mm/s)",
+            min_value=100,
+            max_value=20_000,
+            step=100,
+            key="v_axis_limit",
+        )
+        st.number_input(
+            "Beschleunigung ± (m/s²)",
+            min_value=1_000,
+            max_value=50_000,
+            step=500,
+            key="a_axis_limit",
+        )
 
 if sample_rate <= 0:
     st.sidebar.error("Samplerate muss größer als 0 sein.")
@@ -864,10 +957,9 @@ if not uploaded_file:
 # KANAL-KONFIGURATION – aktive Kanäle aus Einstellungen ableiten
 # ---------------------------------------------------------------------------
 
-# Kanäle 1 und 2 haben Fallback-Namen; 3 und 4 nur wenn explizit eingetragen
 _kanal_cfg = [
-    st.session_state.ch1_name.strip() or 'Kanal 1',
-    st.session_state.ch2_name.strip() or 'Kanal 2',
+    st.session_state.ch1_name.strip(),
+    st.session_state.ch2_name.strip(),
     st.session_state.ch3_name.strip(),
     st.session_state.ch4_name.strip(),
 ]
@@ -881,7 +973,7 @@ if len(kanal_namen_tuple) < 1:
 # DATEN LADEN
 # ---------------------------------------------------------------------------
 
-file_bytes = uploaded_file.read()
+file_bytes = uploaded_file.getvalue()
 
 try:
     df_raw = load_data(
@@ -915,31 +1007,6 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.zoom_token    += 1
     st.session_state.last_file_name = uploaded_file.name
     st.rerun()
-
-# ---------------------------------------------------------------------------
-# SIDEBAR: MANUELLE Y-OFFSETS
-# ---------------------------------------------------------------------------
-
-with st.sidebar.expander("⚖️ Manuelle Offsets (Y)", expanded=False):
-    with st.container(border=True):
-        st.subheader("Set to 0")
-        n_ch     = len(sensor_namen)
-        btn_cols = st.columns(n_ch)
-        for i, name in enumerate(sensor_namen):
-            if btn_cols[i].button(f"{name}", use_container_width=True,
-                                  help="Setzt den Offset so, dass der Minimalwert auf 0 µm liegt.", key=f"auto0_{i}"):
-                val = float(df_raw[name].min()) * -1.0
-                st.session_state[f'off{i+1}']        = val
-                st.session_state[f'off{i+1}_slider'] = val
-                st.rerun()
-    
-    st.markdown("")  # Abstand
-    for i, name in enumerate(sensor_namen):
-        st.slider(
-            f"Offset {name}", -600.0, 600.0, step=0.1,
-            key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
-            help="Y-Versatz für diesen Kanal in µm (Bereich ±600 µm).",
-        )
 
 # Offsets für alle aktiven Kanäle auslesen
 offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
@@ -1124,48 +1191,54 @@ sop_linien: list = []
 v_sop            = float('nan')
 
 if idx_end > idx_start:
-    df_slice  = df.iloc[idx_start:idx_end + 1]
-    arr       = df_slice[active_sensor].values
+    arr_full  = df[active_sensor].values
     dt_step_s = 1.0 / sample_rate
 
-    # v-max: Spitzenwert der gefilterten Geschwindigkeit, gemittelt über Zeitbasis-Fenster
-    gefilt_geschw_roh = _berechne_sg_ableitung(arr, dt_step_s, st.session_state.window_length, 1)
-    if gefilt_geschw_roh is not None:
-        gefilt_geschw = gefilt_geschw_roh / 1000.0   # µm/s → mm/s
-        abs_geschw    = np.abs(gefilt_geschw)
-        idx_vmax_peak = int(np.argmax(abs_geschw))
-        iv_start      = max(0, idx_vmax_peak - halbes_zeitfenster)
-        iv_ende       = min(len(arr) - 1, idx_vmax_peak + halbes_zeitfenster)
-        v_max         = float(np.mean(abs_geschw[iv_start:iv_ende + 1]))
+    # v-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte
+    gefilt_geschw_roh_full = _berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
+    if gefilt_geschw_roh_full is not None:
+        abs_geschw_full = np.abs(gefilt_geschw_roh_full / 1000.0)   # µm/s → mm/s
+        # Peak nur im Cursor-Bereich suchen
+        abs_geschw_slice  = abs_geschw_full[idx_start:idx_end + 1]
+        idx_vmax_peak_loc = int(np.argmax(abs_geschw_slice))
+        idx_vmax_peak     = idx_start + idx_vmax_peak_loc
+        iv_start          = max(0, idx_vmax_peak - halbes_zeitfenster)
+        iv_ende           = min(max_idx, idx_vmax_peak + halbes_zeitfenster)
+        v_max             = min(float(np.mean(abs_geschw_full[iv_start:iv_ende + 1])),
+                                float(st.session_state.v_axis_limit))
 
-        abs_iv_start = idx_start + iv_start
-        abs_iv_ende  = idx_start + iv_ende
-        if 0 <= abs_iv_start <= max_idx and 0 <= abs_iv_ende <= max_idx:
-            t_vmax_start = df.loc[abs_iv_start, 'Zeit (ms)']
-            y_vmax_start = df.loc[abs_iv_start, active_sensor]
-            t_vmax_ende  = df.loc[abs_iv_ende,  'Zeit (ms)']
-            y_vmax_ende  = df.loc[abs_iv_ende,  active_sensor]
+        if 0 <= iv_start <= max_idx and 0 <= iv_ende <= max_idx:
+            t_vmax_start = df.loc[iv_start, 'Zeit (ms)']
+            y_vmax_start = df.loc[iv_start, active_sensor]
+            t_vmax_ende  = df.loc[iv_ende,  'Zeit (ms)']
+            y_vmax_ende  = df.loc[iv_ende,  active_sensor]
             has_vmax     = True
 
-    # a-max: Spitzenwert der gefilterten Beschleunigung, gemittelt über Zeitbasis-Fenster
-    gefilt_beschl_roh = _berechne_sg_ableitung(arr, dt_step_s, st.session_state.window_length_accel, 2)
-    if gefilt_beschl_roh is not None:
-        gefilt_beschl = gefilt_beschl_roh / 1_000_000.0   # µm/s² → m/s²
+    # a-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte an Cursor-Grenzen
+    gefilt_beschl_roh_full = _berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+    if gefilt_beschl_roh_full is not None:
+        gefilt_beschl_full = gefilt_beschl_roh_full / 1_000_000.0   # µm/s² → m/s²
 
-        def _peak_marker(idx_peak):
-            """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak."""
-            ia0     = max(0, idx_peak - halbes_zeitfenster)
-            ia1     = min(len(arr) - 1, idx_peak + halbes_zeitfenster)
-            wert    = float(np.mean(gefilt_beschl[ia0:ia1 + 1]))
-            abs_mid = int(np.clip(idx_start + idx_peak, 0, max_idx))
-            return wert, float(df.loc[abs_mid, 'Zeit (ms)']), float(df.loc[abs_mid, active_sensor])
+        def _peak_marker(idx_abs):
+            """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak (absoluter Index)."""
+            ia0  = max(0, idx_abs - halbes_zeitfenster)
+            ia1  = min(max_idx, idx_abs + halbes_zeitfenster)
+            wert = float(np.mean(gefilt_beschl_full[ia0:ia1 + 1]))
+            return wert, float(df.loc[idx_abs, 'Zeit (ms)']), float(df.loc[idx_abs, active_sensor])
 
-        idx_falling                                        = int(np.argmax(gefilt_beschl))
-        a_max_falling, t_amax_falling, y_amax_falling     = _peak_marker(idx_falling)
+        # Peak nur im Cursor-Bereich suchen
+        beschl_slice = gefilt_beschl_full[idx_start:idx_end + 1]
+
+        a_lim = float(st.session_state.a_axis_limit)
+
+        idx_falling_abs                                = idx_start + int(np.argmax(beschl_slice))
+        a_max_falling, t_amax_falling, y_amax_falling = _peak_marker(idx_falling_abs)
+        a_max_falling = min(a_max_falling,  a_lim)
         has_amax_falling = True
 
-        idx_rising                                        = int(np.argmin(gefilt_beschl))
-        a_min_rising, t_amax_rising, y_amax_rising        = _peak_marker(idx_rising)
+        idx_rising_abs                               = idx_start + int(np.argmin(beschl_slice))
+        a_min_rising, t_amax_rising, y_amax_rising   = _peak_marker(idx_rising_abs)
+        a_min_rising = max(a_min_rising, -a_lim)
         has_amax_rising = True
 
 # SOP – steht nach halbes_zeitfenster-Definition und nach rect_fit
@@ -1292,7 +1365,7 @@ if show_velocity and velocity is not None:
         yaxis2=dict(
             title='Geschwindigkeit (mm/s)',
             overlaying='y', side='right', showgrid=False,
-            range=[-V_ACHSE_LIMIT_MM_S, V_ACHSE_LIMIT_MM_S],
+            range=[-st.session_state.v_axis_limit, st.session_state.v_axis_limit],
         )
     )
 if show_acceleration and acceleration is not None:
@@ -1301,7 +1374,7 @@ if show_acceleration and acceleration is not None:
             title='Beschleunigung (m/s²)',
             overlaying='y', side='right', showgrid=False,
             position=0.85 if show_velocity else 1.0,
-            range=[-A_ACHSE_LIMIT_M_S2, A_ACHSE_LIMIT_M_S2],
+            range=[-st.session_state.a_axis_limit, st.session_state.a_axis_limit],
         )
     )
 st.plotly_chart(fig, width="stretch", key="main_chart")
