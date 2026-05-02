@@ -111,7 +111,7 @@ defaults = {
     'sop_percent': 80,
     'v_axis_limit': 3_200,
     'a_axis_limit': 20_000,
-    'sub_dateityp':   False,
+    'sub_dateityp':   True,
     'sub_einlesen':   False,
     'sub_kanaele':    False,
     'sub_offsets':    False,
