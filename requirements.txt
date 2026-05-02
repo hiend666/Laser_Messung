@@ -1,8 +1,6 @@
-streamlit 
-pandas 
-plotly 
+streamlit
+pandas
+plotly
 kaleido==0.2.1
 scipy
 reportlab
-openai
-python-dotenv
