@@ -105,12 +105,17 @@ defaults = {
     'crop_start': None,
     'crop_end': None,
     'show_velocity': False,
-    'window_length': 50,
+    'window_length': 30,
     'show_acceleration': False,
-    'window_length_accel': 75,
+    'window_length_accel': 40,
     'sop_percent': 80,
     'v_axis_limit': 3_200,
     'a_axis_limit': 20_000,
+    'sub_dateityp':   False,
+    'sub_einlesen':   False,
+    'sub_kanaele':    False,
+    'sub_offsets':    False,
+    'sub_grenzwerte': False,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -141,7 +146,7 @@ def _berechne_sg_ableitung(
     fenster = _clamp_savgol_fenster(fenster, len(signal))
     if fenster < 5:
         return None
-    return savgol_filter(signal, fenster, SAVGOL_POLYNOM, deriv=ordnung, delta=dt_s)
+    return savgol_filter(signal, fenster, SAVGOL_POLYNOM, deriv=ordnung, delta=dt_s, mode='mirror')
 
 
 # ---------------------------------------------------------------------------
@@ -812,9 +817,17 @@ uploaded_file = st.sidebar.file_uploader(
     help="Datei hochladen. CSV plain: Komma-getrennt. Hubmessung: TAB-getrennt mit fester Samplerate.",
 )
 
-with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
+# Beim Einklappen des Gesamt-Expanders auch alle Unter-Expander einklappen
+_einst_prev = st.session_state.get('_einst_prev', True)
+_einst_curr = st.session_state.get('einstellungen', not bool(uploaded_file))
+if _einst_prev and not _einst_curr:
+    for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+        st.session_state[_k] = False
+st.session_state._einst_prev = _einst_curr
 
-    with st.expander("Dateityp", expanded=True):
+with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file), key="einstellungen"):
+
+    with st.expander("Dateityp", expanded=st.session_state.sub_dateityp, key="sub_dateityp"):
         st.radio(
             "Dateityp",
             ["CSV plain", "Hubmessung"],
@@ -823,7 +836,7 @@ with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
             on_change=update_sample_rate_for_file_type,
         )
 
-    with st.expander("Einlesen", expanded=True):
+    with st.expander("Einlesen", expanded=st.session_state.sub_einlesen, key="sub_einlesen"):
         sample_rate_unit  = st.session_state.sample_rate_unit
         sample_rate_input = st.number_input(
             "Abtastung",
@@ -849,7 +862,7 @@ with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
-    with st.expander("Kanäle", expanded=True):
+    with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele"):
         st.caption("Leeres Feld = Kanal nicht einlesen")
         st.text_input("Kanal 1 Name", key="ch1_name",
                       help="Leer lassen um Kanal 1 nicht einzulesen.")
@@ -902,7 +915,7 @@ with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
             st.session_state.last_file_name = uploaded_file.name
             st.rerun()
 
-        with st.expander("Manuelle Offsets (Y)", expanded=True):
+        with st.expander("Manuelle Offsets (Y)", expanded=st.session_state.sub_offsets, key="sub_offsets"):
             with st.container(border=True):
                 st.subheader("Set to 0")
                 n_ch     = len(sensor_namen)
@@ -929,7 +942,7 @@ with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file)):
         sensor_namen = []
         offs = tuple()
 
-    with st.expander("Diagramm-Grenzwerte", expanded=False):
+    with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte"):
         st.number_input(
             "Geschwindigkeit ± (mm/s)",
             min_value=100,
@@ -1082,8 +1095,8 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
     v_time_base_ms = st.slider(
-        "Zeitbasis v-max (ms)", 0.01, 0.10, 0.05,
-        step=0.01, format="%.2f ms",
+        "Zeitbasis v-max (ms)", 0.005, 0.10, 0.03,
+        step=0.005, format="%.3f ms",
         help="Mittelungsfenster für v-max, a-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
 
@@ -1099,7 +1112,7 @@ show_velocity = st.sidebar.toggle(
 )
 if show_velocity:
     st.sidebar.slider(
-        "Glättung Geschwindigkeit", 10, 90, step=1,
+        "Glättung Geschwindigkeit", 5, 80, step=1,
         value=st.session_state.window_length,
         key="window_length",
         help="Fenstergröße des Savitzky-Golay-Filters für die Geschwindigkeitskurve. Größer = glatter, aber geringere Detailauflösung.",
@@ -1110,7 +1123,7 @@ show_acceleration = st.sidebar.toggle(
 )
 if show_acceleration:
     st.sidebar.slider(
-        "Glättung Beschleunigung", 50, 120, step=1,
+        "Glättung Beschleunigung", 10, 75, step=1,
         value=st.session_state.window_length_accel,
         key="window_length_accel",
         help="Fenstergröße des Savitzky-Golay-Filters für die Beschleunigungskurve. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
