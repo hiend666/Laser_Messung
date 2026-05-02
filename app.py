@@ -1095,7 +1095,7 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
     v_time_base_ms = st.slider(
-        "Zeitbasis v-max (ms)", 0.005, 0.10, 0.03,
+        "Zeitbasis v-max (ms)", 0.010, 0.10, 0.03,
         step=0.005, format="%.3f ms",
         help="Mittelungsfenster für v-max, a-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
