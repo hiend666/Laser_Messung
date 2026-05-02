@@ -20,7 +20,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 
-VERSION = "v1.00.05"
+VERSION = "v1.00.06"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -32,9 +32,14 @@ A_ACHSE_LIMIT_M_S2 = 12_000   # Feste Y-Grenze Beschleunigungsachse   ± m/s²
 MAX_PLOT_PUNKTE    = 5_000     # Downsampling-Schwelle für interaktives Diagramm
 SAVGOL_POLYNOM     = 3         # Polynomgrad für alle Savitzky-Golay-Filter
 
-# Diagramm-Farben
+# Diagramm-Farben – Kanäle
 FARBE_KANAL1    = '#003366'
 FARBE_KANAL2    = '#4c78a8'
+FARBE_KANAL3    = '#d62728'
+FARBE_KANAL4    = '#2ca02c'
+KANAL_FARBEN    = [FARBE_KANAL1, FARBE_KANAL2, FARBE_KANAL3, FARBE_KANAL4]
+
+# Diagramm-Farben – Auswertung
 FARBE_GESCHW    = 'purple'
 FARBE_BESCHL    = 'orange'
 FARBE_V_SCHNITT = 'green'
@@ -73,8 +78,12 @@ st.markdown("""
 defaults = {
     'off1': 0.0,
     'off2': 0.0,
+    'off3': 0.0,
+    'off4': 0.0,
     'off1_slider': 0.0,
     'off2_slider': 0.0,
+    'off3_slider': 0.0,
+    'off4_slider': 0.0,
     'xa': 0.0,        # freie Wahrheitsquelle – nie Widget-Key
     'xb': 0.001,      # freie Wahrheitsquelle – nie Widget-Key
     'xa_sw': 0.0,     # Widget-Key: Slider XA
@@ -89,6 +98,8 @@ defaults = {
     'skip_rows': 12,
     'ch1_name': 'Festo',
     'ch2_name': 'DST',
+    'ch3_name': '',   # leer = Kanal nicht einlesen
+    'ch4_name': '',   # leer = Kanal nicht einlesen
     'max_samples': 8000,
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
@@ -97,6 +108,7 @@ defaults = {
     'window_length': 50,
     'show_acceleration': False,
     'window_length_accel': 75,
+    'sop_percent': 80,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -135,39 +147,135 @@ def _berechne_sg_ableitung(
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-def load_csv(
-    file_bytes: bytes, skip_rows: int, max_samples: int, ch1: str, ch2: str
+@st.cache_data
+def load_data(
+    file_bytes: bytes,
+    skip_rows: int,
+    max_samples: int,
+    kanal_namen: tuple[str, ...],
+    file_type: str,
 ) -> pd.DataFrame:
-    """Liest CSV im Roh- oder Sauber-Format und gibt DataFrame mit zwei Messspalten zurück."""
-    nrows = max_samples if max_samples > 0 else None
-    probe = pd.read_csv(
-        io.BytesIO(file_bytes), sep=',', decimal='.', header=None, skiprows=skip_rows, nrows=1
-    )
-    first_cell = str(probe.iloc[0, 0]).strip()
-    try:
-        float(first_cell)
-        # Roh-Format: keine Spaltenköpfe, erste Zelle ist bereits numerisch
+    """Liest Daten im CSV- oder TXT-Format und gibt DataFrame mit den konfigurierten Kanälen zurück.
+
+    Leere Spalten (NaN in der ersten Datenzeile) werden vor der Kanalzuweisung herausgefiltert.
+    kanal_namen bestimmt, wie viele Spalten eingelesen werden und wie sie heißen.
+    """
+    n_kanäle = len(kanal_namen)
+    nrows    = max_samples if max_samples > 0 else None
+
+    if file_type == "Hubmessung":
+        # TXT-Datei für Hubmessung: TAB-getrennt, Header-Blöcke überspringen
+        content = file_bytes.decode('utf-8', errors='ignore')
+
+        # Finde den Beginn der Daten nach "####Test Data####"
+        lines = content.split('\n')
+        data_start_idx = -1
+        for i, line in enumerate(lines):
+            if line.strip() == "####Test Data####":
+                # Daten beginnen zwei Zeilen später (nach "Stroke Data" und Header)
+                data_start_idx = i + 2
+                break
+
+        if data_start_idx == -1:
+            raise ValueError("TXT-Datei enthält keinen gültigen '####Test Data####' Block.")
+
+        # Daten ab data_start_idx einlesen
+        data_lines = lines[data_start_idx:]
+        # Leere Zeilen und nicht-numerische Zeilen filtern
+        filtered_lines = []
+        for line in data_lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Prüfe ob die Zeile numerische Daten enthält
+            parts = line.split('\t')
+            try:
+                float(parts[0])  # Erste Spalte sollte Zeit sein
+                filtered_lines.append(line)
+            except (ValueError, IndexError):
+                continue
+
+        if not filtered_lines:
+            raise ValueError("Keine gültigen numerischen Daten in der TXT-Datei gefunden.")
+
+        # Als CSV-String behandeln
+        data_content = '\n'.join(filtered_lines)
         df = pd.read_csv(
-            io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
-            skiprows=skip_rows, nrows=nrows
+            io.StringIO(data_content), sep='\t', decimal='.', header=None
         )
-        df = df.dropna(axis=1, how='all')
-        data_cols = [c for c in df.columns if df[c].dtype in ['float64', 'float32']]
-        if len(data_cols) < 2:
-            raise ValueError("CSV enthält weniger als 2 numerische Spalten.")
-        df = df[data_cols[:2]].copy()
-        df.columns = [ch1, ch2]
-    except ValueError as exc:
-        # Sauber-Format: erste Zeile ist Spaltenheader
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', nrows=nrows)
-        df = df.dropna(axis=1, how='all')
-        sensor_cols = [c for c in df.columns if c != 'Zeit (s)']
-        if len(sensor_cols) < 2:
+
+        # Spalten herausfiltern, die in der ersten Datenzeile leer sind
+        erste_zeile = df.iloc[0]
+        df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
+
+        # Erste Spalte ist Zeit in ms, restliche sind Sensordaten
+        time_col = df.columns[0]
+        sensor_cols = df.columns[1:]
+
+        if len(sensor_cols) < n_kanäle:
             raise ValueError(
-                "CSV enthält weniger als 2 Messwert-Spalten nach dem Header."
-            ) from exc
-        df = df.rename(columns={sensor_cols[0]: ch1, sensor_cols[1]: ch2})
-    return df
+                f"TXT-Datei enthält nur {len(sensor_cols)} Sensordaten-Spalten, "
+                f"aber {n_kanäle} Kanäle sind konfiguriert."
+            )
+
+        # DataFrame mit Zeit und Sensordaten erstellen
+        result_df = pd.DataFrame()
+        result_df['Zeit (ms)'] = df[time_col]
+        for i, kanal_name in enumerate(kanal_namen):
+            result_df[kanal_name] = df[sensor_cols[i]]
+
+        return result_df
+
+    else:
+        # CSV plain Format
+        probe      = pd.read_csv(
+            io.BytesIO(file_bytes), sep=',', decimal='.', header=None, skiprows=skip_rows, nrows=1
+        )
+        first_cell = str(probe.iloc[0, 0]).strip()
+
+        try:
+            float(first_cell)
+            # Roh-Format: keine Spaltenköpfe, erste Zelle ist bereits numerisch
+            df = pd.read_csv(
+                io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
+                skiprows=skip_rows, nrows=nrows
+            )
+            df = df.dropna(axis=1, how='all')
+            # Spalten herausfiltern, die in der ersten Datenzeile leer sind
+            erste_zeile = df.iloc[0]
+            df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
+            data_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            if len(data_cols) < n_kanäle:
+                raise ValueError(
+                    f"CSV enthält nur {len(data_cols)} befüllte numerische Spalten, "
+                    f"aber {n_kanäle} Kanäle sind konfiguriert."
+                )
+            # DataFrame mit berechneten Zeitstempeln und Sensordaten erstellen
+            result_df = pd.DataFrame()
+            result_df['Zeit (ms)'] = build_time_axis(len(df), sample_rate)
+            for i, kanal_name in enumerate(kanal_namen):
+                result_df[kanal_name] = df[data_cols[i]]
+
+        except ValueError as exc:
+            # Sauber-Format: erste Zeile ist Spaltenheader
+            df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', nrows=nrows)
+            df = df.dropna(axis=1, how='all')
+            # Spalten herausfiltern, die in der ersten Datenzeile leer sind
+            erste_zeile = df.iloc[0]
+            df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
+            sensor_cols = [c for c in df.columns if c != 'Zeit (s)']
+            if len(sensor_cols) < n_kanäle:
+                raise ValueError(
+                    f"CSV enthält nur {len(sensor_cols)} befüllte Messspalten, "
+                    f"aber {n_kanäle} Kanäle sind konfiguriert."
+                ) from exc
+            # DataFrame mit Zeit und Sensordaten erstellen
+            result_df = pd.DataFrame()
+            result_df['Zeit (ms)'] = build_time_axis(len(df), sample_rate)
+            for i, kanal_name in enumerate(kanal_namen):
+                result_df[kanal_name] = df[sensor_cols[i]]
+
+        return result_df
 
 
 @st.cache_data
@@ -178,13 +286,16 @@ def build_time_axis(n_samples: int, sr: float) -> np.ndarray:
 
 @st.cache_data
 def apply_offsets(
-    raw_s1: np.ndarray, raw_s2: np.ndarray,
-    off1: float, off2: float,
+    kanal_namen: tuple[str, ...],
+    kanal_arrays: tuple,        # tuple of np.ndarray, je Kanal ein Array
+    offsets: tuple[float, ...],
     zeit: np.ndarray,
-    s1: str, s2: str,
 ) -> pd.DataFrame:
     """Erzeugt den verarbeiteten DataFrame – nur bei echten Änderungen neu berechnet."""
-    return pd.DataFrame({'Zeit (ms)': zeit, s1: raw_s1 + off1, s2: raw_s2 + off2})
+    data: dict = {'Zeit (ms)': zeit}
+    for name, arr, off in zip(kanal_namen, kanal_arrays, offsets):
+        data[name] = arr + off
+    return pd.DataFrame(data)
 
 
 @st.cache_data
@@ -254,7 +365,7 @@ def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
 
 # ---------------------------------------------------------------------------
 # CALLBACKS – Zwei-Key-Muster
-# Widgets schreiben immer in den freien Key (xa/xb/off1/off2), nie umgekehrt.
+# Widgets schreiben immer in den freien Key (xa/xb/off1…4), nie umgekehrt.
 # ---------------------------------------------------------------------------
 
 def update_xa_from_slider():
@@ -275,6 +386,20 @@ def update_off1_from_slider():
 def update_off2_from_slider():
     st.session_state.off2 = st.session_state.off2_slider
 
+def update_off3_from_slider():
+    st.session_state.off3 = st.session_state.off3_slider
+
+def update_off4_from_slider():
+    st.session_state.off4 = st.session_state.off4_slider
+
+# Indizierter Zugriff auf Offset-Callbacks (Index 0–3 entspricht Kanal 1–4)
+OFF_CALLBACKS = [
+    update_off1_from_slider,
+    update_off2_from_slider,
+    update_off3_from_slider,
+    update_off4_from_slider,
+]
+
 def update_sample_rate_unit():
     new_unit = "µs" if st.session_state.sample_rate_unit_toggle else "Hz"
     old_unit = st.session_state.sample_rate_unit
@@ -282,6 +407,16 @@ def update_sample_rate_unit():
         if st.session_state.sample_rate > 0:
             st.session_state.sample_rate = 1_000_000.0 / st.session_state.sample_rate
         st.session_state.sample_rate_unit = new_unit
+
+
+def update_sample_rate_for_file_type():
+    """Setzt die Samplerate automatisch basierend auf dem Dateityp."""
+    if st.session_state.get('file_type_radio', 'CSV plain') == "Hubmessung":
+        # Hubmessungen haben feste Samplerate von 2.55 µs
+        st.session_state.sample_rate = 2.55
+        st.session_state.sample_rate_unit = "µs"
+        st.session_state.sample_rate_unit_toggle = True
+    # Für CSV plain bleiben die Einstellungen wie sie sind
 
 
 # ---------------------------------------------------------------------------
@@ -361,23 +496,89 @@ def _zeichne_rechteck_fit(
 
 
 # ---------------------------------------------------------------------------
+# HILFSFUNKTION – SPEED ON POINT
+# ---------------------------------------------------------------------------
+
+def _finde_sop_kreuzungen(
+    zeit: np.ndarray,
+    signal: np.ndarray,
+    rect_fit: dict,
+    sop_percent: float,
+    sample_rate: float,
+    halbes_zeitfenster: int,
+) -> tuple[list, float]:
+    """Findet SOP-Punkte an steigenden Flanken des Rechteck-Fits.
+
+    Gibt (sop_linien, v_sop) zurück:
+    - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level) für Diagramm-Linien
+    - v_sop:      Geschwindigkeit am ersten Kreuzungspunkt (mm/s), oder nan
+    """
+    hub = rect_fit['y_high'] - rect_fit['y_low']
+    if hub <= 0:
+        return [], float('nan')
+
+    sop_level = rect_fit['y_low'] + (sop_percent / 100.0) * hub
+    n         = len(signal)
+    ergebnisse = []
+
+    for run in rect_fit['runs']:
+        # Suchfenster: kurz vor Pulsstart bis ins erste Drittel des Pulses
+        t_suche_start = run['t_start'] - 0.5
+        t_suche_ende  = run['t_start'] + max(0.1, (run['t_end'] - run['t_start']) * 0.3)
+        idx_fenster   = np.where((zeit >= t_suche_start) & (zeit <= t_suche_ende))[0]
+        if len(idx_fenster) < 2:
+            continue
+
+        s             = signal[idx_fenster]
+        kreuzungs_pos = np.where((s[:-1] < sop_level) & (s[1:] >= sop_level))[0]
+        if len(kreuzungs_pos) == 0:
+            continue
+
+        abs_idx = int(idx_fenster[kreuzungs_pos[0] + 1])
+
+        # Geschwindigkeit an der Kreuzung (finite difference über halbes_zeitfenster)
+        i0    = max(0, abs_idx - halbes_zeitfenster)
+        i1    = min(n - 1, abs_idx + halbes_zeitfenster)
+        dt_s  = (i1 - i0) / sample_rate
+        v_sop = ((signal[i1] - signal[i0]) / 1000.0) / dt_s if dt_s > 0 else float('nan')
+
+        # Linie: je 10 Samples links und rechts des Kreuzungspunkts
+        t_sop    = float(zeit[abs_idx])
+        t_links  = float(zeit[max(0, abs_idx - 10)])
+        t_rechts = float(zeit[min(n - 1, abs_idx + 10)])
+        ergebnisse.append((t_sop, t_links, t_rechts, sop_level, v_sop))
+
+    if not ergebnisse:
+        return [], float('nan')
+
+    # Format pro Eintrag: (t_sop, t_links, t_rechts, y_level)
+    sop_linien = [(t_sop, t0, t1, y) for t_sop, t0, t1, y, _ in ergebnisse]
+    v_sop_wert = ergebnisse[0][4]   # Geschwindigkeit am ersten Kreuzungspunkt
+    return sop_linien, v_sop_wert
+
+
+# ---------------------------------------------------------------------------
 # EXPORT: DIAGRAMM ALS PNG
 # ---------------------------------------------------------------------------
 
 def build_chart_png(
-    df, s1_name, s2_name, active_sensor,
+    df,
+    sensor_namen: list[str],
+    active_sensor: str,
     xa, xb, ya, yb, show_v_avg,
     t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
-    t_amax, y_amax, has_amax,
+    t_amax_falling, y_amax_falling, has_amax_falling,
+    t_amax_rising,  y_amax_rising,  has_amax_rising,
     show_rect_fit=False, rect_fit=None,
     show_velocity=False, window_length=21,
     show_acceleration=False, window_length_accel=21,
+    sop_linien=None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
 
     # Y-Achse: 15 % Puffer über Signalbereich damit Legende den Graph nicht verdeckt
-    y_max_e   = float(df[[s1_name, s2_name]].max().max())
-    y_min_e   = float(df[[s1_name, s2_name]].min().min())
+    y_max_e   = float(df[sensor_namen].max().max())
+    y_min_e   = float(df[sensor_namen].min().min())
     y_range_e = [y_min_e, y_max_e + (y_max_e - y_min_e) * 0.15]
 
     # Ableitungen für Export-Diagramm berechnen
@@ -393,12 +594,13 @@ def build_chart_png(
             acceleration = roh / 1_000_000.0 if roh is not None else None
 
     export_fig = go.Figure()
-    export_fig.add_trace(go.Scatter(
-        x=df['Zeit (ms)'], y=df[s1_name], name=s1_name, line=dict(color=FARBE_KANAL1),
-    ))
-    export_fig.add_trace(go.Scatter(
-        x=df['Zeit (ms)'], y=df[s2_name], name=s2_name, line=dict(color=FARBE_KANAL2),
-    ))
+
+    for i, name in enumerate(sensor_namen):
+        export_fig.add_trace(go.Scatter(
+            x=df['Zeit (ms)'], y=df[name],
+            name=name, line=dict(color=KANAL_FARBEN[i]),
+        ))
+
     export_fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
     export_fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
 
@@ -422,13 +624,41 @@ def build_chart_png(
             mode='lines+markers', name='v-max',
             line=dict(color=FARBE_VMAX, width=2),
         ))
-    if has_amax and t_amax is not None:
+    if has_amax_falling and t_amax_falling is not None:
         export_fig.add_trace(go.Scatter(
-            x=[t_amax], y=[y_amax],
+            x=[t_amax_falling], y=[y_amax_falling],
             mode='markers', name='a-max',
             marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
                         line=dict(color=FARBE_AMAX, width=2)),
         ))
+    if has_amax_rising and t_amax_rising is not None:
+        export_fig.add_trace(go.Scatter(
+            x=[t_amax_rising], y=[y_amax_rising],
+            mode='markers', name='a-min',
+            marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
+                        line=dict(color=FARBE_AMAX, width=2)),
+        ))
+    if sop_linien:
+        t_min_export   = float(df['Zeit (ms)'].min())
+        t_max_export   = float(df['Zeit (ms)'].max())
+        erste_sichtbar = True
+        for t_sop, t0, t1, y_lvl in sop_linien:
+            if not (t_min_export <= t_sop <= t_max_export):
+                continue
+            export_fig.add_trace(go.Scatter(
+                x=[max(t0, t_min_export), min(t1, t_max_export)], y=[y_lvl, y_lvl],
+                mode='lines',
+                name='SOP' if erste_sichtbar else None,
+                showlegend=erste_sichtbar,
+                line=dict(color=FARBE_GESCHW, width=2),
+            ))
+            export_fig.add_trace(go.Scatter(
+                x=[t_sop], y=[y_lvl],
+                mode='markers', showlegend=False,
+                marker=dict(color=FARBE_GESCHW, size=14, symbol='x',
+                            line=dict(color=FARBE_GESCHW, width=2)),
+            ))
+            erste_sichtbar = False
     if show_velocity and velocity is not None:
         export_fig.add_trace(go.Scatter(
             x=df['Zeit (ms)'], y=velocity,
@@ -565,9 +795,26 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
 # SIDEBAR: CSV-IMPORT UND EINSTELLUNGEN
 # ---------------------------------------------------------------------------
 
-st.sidebar.header("1. CSV-Import")
+st.sidebar.header("1. Import")
 st.sidebar.caption(f"Version: {VERSION}")
-uploaded_file = st.sidebar.file_uploader("upload", type="csv", label_visibility="collapsed")
+
+# Dateityp-Auswahl
+file_type = st.sidebar.radio(
+    "Dateityp",
+    ["CSV plain", "Hubmessung"],
+    index=0,
+    key="file_type_radio",
+    help="CSV plain: Standard-CSV mit Komma-Trennung. Hubmessung: TXT-Datei mit TAB-Trennung und fester Samplerate.",
+    on_change=update_sample_rate_for_file_type,
+)
+
+# Dateifilter basierend auf Typ
+file_extensions = ["csv"] if file_type == "CSV plain" else ["txt"]
+
+uploaded_file = st.sidebar.file_uploader(
+    "upload", type=file_extensions, label_visibility="collapsed",
+    help="Datei hochladen. CSV plain: Komma-getrennt. Hubmessung: TAB-getrennt mit fester Samplerate.",
+)
 
 with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file)):
     sample_rate_unit  = st.session_state.sample_rate_unit
@@ -583,17 +830,27 @@ with st.sidebar.expander("⚙️ Einstellungen", expanded=not bool(uploaded_file
         key="sample_rate_unit_toggle",
         on_change=update_sample_rate_unit,
         label_visibility="visible",
+        help="Eingabeeinheit umschalten: µs = Zeitabstand pro Sample, Hz = Abtastfrequenz.",
     )
     sample_rate_unit = "µs" if use_us else "Hz"
     if st.session_state.sample_rate_unit != sample_rate_unit:
         st.session_state.sample_rate_unit = sample_rate_unit
     sample_rate = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
 
-    st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows")
+    st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
+                    help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
     st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
-                    help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle)")
-    st.text_input("Kanal 1 Name", key="ch1_name")
-    st.text_input("Kanal 2 Name", key="ch2_name")
+                    help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
+
+    st.markdown("**Kanäle** – leeres Feld = Kanal nicht einlesen")
+    st.text_input("Kanal 1 Name", key="ch1_name",
+                  help="Kanalbezeichnung für Diagramm, Legende und Export.")
+    st.text_input("Kanal 2 Name", key="ch2_name",
+                  help="Kanalbezeichnung für Diagramm, Legende und Export.")
+    st.text_input("Kanal 3 Name", key="ch3_name",
+                  help="Leer lassen um Kanal 3 nicht einzulesen.")
+    st.text_input("Kanal 4 Name", key="ch4_name",
+                  help="Leer lassen um Kanal 4 nicht einzulesen.")
 
 if sample_rate <= 0:
     st.sidebar.error("Samplerate muss größer als 0 sein.")
@@ -604,25 +861,38 @@ if not uploaded_file:
     st.stop()
 
 # ---------------------------------------------------------------------------
+# KANAL-KONFIGURATION – aktive Kanäle aus Einstellungen ableiten
+# ---------------------------------------------------------------------------
+
+# Kanäle 1 und 2 haben Fallback-Namen; 3 und 4 nur wenn explizit eingetragen
+_kanal_cfg = [
+    st.session_state.ch1_name.strip() or 'Kanal 1',
+    st.session_state.ch2_name.strip() or 'Kanal 2',
+    st.session_state.ch3_name.strip(),
+    st.session_state.ch4_name.strip(),
+]
+kanal_namen_tuple = tuple(n for n in _kanal_cfg if n)
+
+if len(kanal_namen_tuple) < 1:
+    st.sidebar.error("Mindestens ein Kanalname muss angegeben sein.")
+    st.stop()
+
+# ---------------------------------------------------------------------------
 # DATEN LADEN
 # ---------------------------------------------------------------------------
 
 file_bytes = uploaded_file.read()
-ch1 = st.session_state.ch1_name or 'Kanal 1'
-ch2 = st.session_state.ch2_name or 'Kanal 2'
 
 try:
-    df_raw = load_csv(file_bytes, st.session_state.skip_rows, st.session_state.max_samples, ch1, ch2)
+    df_raw = load_data(
+        file_bytes, st.session_state.skip_rows,
+        st.session_state.max_samples, kanal_namen_tuple, file_type,
+    )
 except ValueError as e:
     st.error(f"Fehler beim Laden: {e}")
     st.stop()
 
-sensor_cols = [c for c in df_raw.columns if c != 'Zeit (s)']
-if len(sensor_cols) < 2:
-    st.error("Die Datei benötigt mindestens zwei Messwert-Spalten.")
-    st.stop()
-
-s1_name, s2_name = sensor_cols[0], sensor_cols[1]
+sensor_namen = list(kanal_namen_tuple)   # tatsächlich geladene Kanalnamen
 
 # ---------------------------------------------------------------------------
 # AUTO-RESET BEI NEUER DATEI
@@ -630,12 +900,14 @@ s1_name, s2_name = sensor_cols[0], sensor_cols[1]
 
 if st.session_state.last_file_name != uploaded_file.name:
     total_time_ms = len(df_raw) / sample_rate * 1000.0
-    off1_init = float(df_raw[s1_name].min()) * -1.0
-    off2_init = float(df_raw[s2_name].min()) * -1.0
-    st.session_state.off1           = off1_init
-    st.session_state.off2           = off2_init
-    st.session_state.off1_slider    = off1_init
-    st.session_state.off2_slider    = off2_init
+    for i, name in enumerate(sensor_namen, 1):
+        off_init = float(df_raw[name].min()) * -1.0
+        st.session_state[f'off{i}']        = off_init
+        st.session_state[f'off{i}_slider'] = off_init
+    # Offsets für nicht geladene Kanäle zurücksetzen
+    for i in range(len(sensor_namen) + 1, 5):
+        st.session_state[f'off{i}']        = 0.0
+        st.session_state[f'off{i}_slider'] = 0.0
     st.session_state.xa             = total_time_ms * 0.30
     st.session_state.xb             = total_time_ms * 0.50
     st.session_state.crop_start     = None
@@ -649,41 +921,45 @@ if st.session_state.last_file_name != uploaded_file.name:
 # ---------------------------------------------------------------------------
 
 with st.sidebar.expander("⚖️ Manuelle Offsets (Y)", expanded=False):
-    col1, col2 = st.columns(2)
-    if col1.button(f"Auto-0\n{s1_name}", use_container_width=True):
-        val = float(df_raw[s1_name].min()) * -1.0
-        st.session_state.off1        = val
-        st.session_state.off1_slider = val
-        st.rerun()
-    if col2.button(f"Auto-0\n{s2_name}", use_container_width=True):
-        val = float(df_raw[s2_name].min()) * -1.0
-        st.session_state.off2        = val
-        st.session_state.off2_slider = val
-        st.rerun()
-    st.slider(
-        f"Offset {s1_name}", -600.0, 600.0, step=0.1,
-        key="off1_slider", on_change=update_off1_from_slider,
-    )
-    st.slider(
-        f"Offset {s2_name}", -600.0, 600.0, step=0.1,
-        key="off2_slider", on_change=update_off2_from_slider,
-    )
+    with st.container(border=True):
+        st.subheader("Set to 0")
+        n_ch     = len(sensor_namen)
+        btn_cols = st.columns(n_ch)
+        for i, name in enumerate(sensor_namen):
+            if btn_cols[i].button(f"{name}", use_container_width=True,
+                                  help="Setzt den Offset so, dass der Minimalwert auf 0 µm liegt.", key=f"auto0_{i}"):
+                val = float(df_raw[name].min()) * -1.0
+                st.session_state[f'off{i+1}']        = val
+                st.session_state[f'off{i+1}_slider'] = val
+                st.rerun()
+    
+    st.markdown("")  # Abstand
+    for i, name in enumerate(sensor_namen):
+        st.slider(
+            f"Offset {name}", -600.0, 600.0, step=0.1,
+            key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
+            help="Y-Versatz für diesen Kanal in µm (Bereich ±600 µm).",
+        )
 
-off1 = st.session_state.off1
-off2 = st.session_state.off2
+# Offsets für alle aktiven Kanäle auslesen
+offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
 
 # ---------------------------------------------------------------------------
 # DATENVERARBEITUNG
 # ---------------------------------------------------------------------------
 
-zeit_full     = build_time_axis(len(df_raw), sample_rate)   # ms
+if file_type == "Hubmessung":
+    # Für Hubmessungen: Zeit aus der Datei verwenden
+    zeit_full = df_raw['Zeit (ms)'].values
+else:
+    # Für CSV: Zeitachse berechnen
+    zeit_full = build_time_axis(len(df_raw), sample_rate)   # ms
+
 max_zeit_full = float(zeit_full[-1])
 max_idx_full  = len(df_raw) - 1
 
-df_full = apply_offsets(
-    df_raw[s1_name].values, df_raw[s2_name].values,
-    off1, off2, zeit_full, s1_name, s2_name,
-)
+kanal_arrays = tuple(df_raw[name].values for name in sensor_namen)
+df_full = apply_offsets(kanal_namen_tuple, kanal_arrays, offs, zeit_full)
 
 # ---------------------------------------------------------------------------
 # CROP-LOGIK
@@ -712,8 +988,9 @@ else:
 
 st.sidebar.header("2. Auswertung")
 active_sensor = st.sidebar.radio(
-    "Kanal für Messung:", [s1_name, s2_name],
+    "Kanal für Messung:", sensor_namen,
     horizontal=True, label_visibility="collapsed",
+    help="Aktiver Kanal für alle Berechnungen: Cursor-Messung, v-max, a-max und SOP.",
 )
 
 # Cursor-Werte auf aktiven Zeitbereich begrenzen
@@ -727,51 +1004,62 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
         "Zeit XA (ms)", min_zeit, max_zeit,
         value=xa, step=0.001, format="%.3f",
         key="xa_nw", on_change=update_xa_from_num,
+        help="Linker Zeitcursor in ms – Startpunkt für Δt, Δs und v-mid.",
     )
     st.number_input(
         "Zeit XB (ms)", min_zeit, max_zeit,
         value=xb, step=0.001, format="%.3f",
         key="xb_nw", on_change=update_xb_from_num,
+        help="Rechter Zeitcursor in ms – Endpunkt für Δt, Δs und v-mid.",
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
-    # Zeitbasis für die Mittelwertbildung bei v-max und a-max (in ms)
     v_time_base_ms = st.slider(
         "Zeitbasis v-max (ms)", 0.01, 0.10, 0.05,
         step=0.01, format="%.2f ms",
+        help="Mittelungsfenster für v-max, a-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
 
-show_v_avg    = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False)
+show_v_avg    = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False,
+                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Geschwindigkeit v-mid.")
 show_rect_fit = st.sidebar.toggle(
     "Best-fit Rechteck füllen", value=False,
-    help="Zeigt vertikale Kanten und hellgrüne Füllung für alle erkannten Pulse.",
+    help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
 show_velocity = st.sidebar.toggle(
     "Geschwindigkeit anzeigen", value=False,
-    help="Zeigt die Geschwindigkeit des ausgewählten Kanals mit zweiter Y-Achse rechts.",
+    help="Zeigt die Geschwindigkeit (mm/s) des aktiven Kanals auf einer zweiten Y-Achse rechts. Achse fest auf ±3200 mm/s.",
 )
 if show_velocity:
     st.sidebar.slider(
         "Glättung Geschwindigkeit", 10, 90, step=1,
         value=st.session_state.window_length,
         key="window_length",
-        help="Fenstergröße Savitzky-Golay-Filter (größer = glatter, aber weniger Details).",
+        help="Fenstergröße des Savitzky-Golay-Filters für die Geschwindigkeitskurve. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
     "Beschleunigung anzeigen", value=False,
-    help="Zeigt die Beschleunigung des ausgewählten Kanals mit dritter Y-Achse.",
+    help="Zeigt die Beschleunigung (m/s²) des aktiven Kanals auf einer dritten Y-Achse rechts. Achse fest auf ±12000 m/s².",
 )
 if show_acceleration:
     st.sidebar.slider(
         "Glättung Beschleunigung", 50, 120, step=1,
         value=st.session_state.window_length_accel,
         key="window_length_accel",
-        help="Fenstergröße Savitzky-Golay-Filter (größer = glatter, aber weniger Details).",
+        help="Fenstergröße des Savitzky-Golay-Filters für die Beschleunigungskurve. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
     )
-accel_falling = not st.sidebar.toggle(
-    "Falling / Rising", value=False,
-    help="Falling = positive Beschleunigung (Weg/v steigt)\nRising = negative Beschleunigung (Weg/v nimmt ab)",
+
+show_sop = st.sidebar.toggle(
+    "Speed on Point (SOP)", value=False,
+    help="Misst die Geschwindigkeit an der steigenden Flanke des Rechtecksignals auf einem einstellbaren Hub-Pegel. Erfordert erkanntes Rechteck-Fit.",
 )
+if show_sop:
+    st.sidebar.slider(
+        "SOP Pegel (%)", 0, 100, step=1,
+        value=st.session_state.sop_percent,
+        key="sop_percent",
+        help="Höhe auf der steigenden Flanke in Prozent des Hub (0 % = unterer Pegel, 100 % = oberer Pegel).",
+    )
 
 # Rechteck-Fit auf den vollständigen (ungecropten) Datensatz anwenden
 rect_fit = compute_best_fit_rectangle(
@@ -824,11 +1112,16 @@ idx_start, idx_end = sorted([idx_a, idx_b])
 # Initialisierung der Peak-Marker (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
 t_vmax_ende,  y_vmax_ende  = None, None
-t_amax,       y_amax       = None, None
-has_vmax = False
-has_amax = False
-v_max    = float('nan')
-a_max    = float('nan')
+t_amax_falling, y_amax_falling = None, None
+t_amax_rising,  y_amax_rising  = None, None
+has_vmax         = False
+has_amax_falling = False
+has_amax_rising  = False
+v_max            = float('nan')
+a_max_falling    = float('nan')
+a_min_rising     = float('nan')
+sop_linien: list = []
+v_sop            = float('nan')
 
 if idx_end > idx_start:
     df_slice  = df.iloc[idx_start:idx_end + 1]
@@ -858,15 +1151,33 @@ if idx_end > idx_start:
     gefilt_beschl_roh = _berechne_sg_ableitung(arr, dt_step_s, st.session_state.window_length_accel, 2)
     if gefilt_beschl_roh is not None:
         gefilt_beschl = gefilt_beschl_roh / 1_000_000.0   # µm/s² → m/s²
-        idx_amax_peak = int(np.argmax(gefilt_beschl) if accel_falling else np.argmin(gefilt_beschl))
-        ia_start      = max(0, idx_amax_peak - halbes_zeitfenster)
-        ia_ende       = min(len(arr) - 1, idx_amax_peak + halbes_zeitfenster)
-        a_max         = float(np.mean(gefilt_beschl[ia_start:ia_ende + 1]))
 
-        abs_ia_mid = int(np.clip(idx_start + idx_amax_peak, 0, max_idx))
-        t_amax     = float(df.loc[abs_ia_mid, 'Zeit (ms)'])
-        y_amax     = float(df.loc[abs_ia_mid, active_sensor])
-        has_amax   = True
+        def _peak_marker(idx_peak):
+            """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak."""
+            ia0     = max(0, idx_peak - halbes_zeitfenster)
+            ia1     = min(len(arr) - 1, idx_peak + halbes_zeitfenster)
+            wert    = float(np.mean(gefilt_beschl[ia0:ia1 + 1]))
+            abs_mid = int(np.clip(idx_start + idx_peak, 0, max_idx))
+            return wert, float(df.loc[abs_mid, 'Zeit (ms)']), float(df.loc[abs_mid, active_sensor])
+
+        idx_falling                                        = int(np.argmax(gefilt_beschl))
+        a_max_falling, t_amax_falling, y_amax_falling     = _peak_marker(idx_falling)
+        has_amax_falling = True
+
+        idx_rising                                        = int(np.argmin(gefilt_beschl))
+        a_min_rising, t_amax_rising, y_amax_rising        = _peak_marker(idx_rising)
+        has_amax_rising = True
+
+# SOP – steht nach halbes_zeitfenster-Definition und nach rect_fit
+if show_sop and rect_fit is not None:
+    sop_linien, v_sop = _finde_sop_kreuzungen(
+        df_full['Zeit (ms)'].values,
+        df_full[active_sensor].values,
+        rect_fit,
+        st.session_state.sop_percent,
+        sample_rate,
+        halbes_zeitfenster,
+    )
 
 # ---------------------------------------------------------------------------
 # DOWNSAMPLING FÜR GROSSE DATEIEN
@@ -891,14 +1202,13 @@ velocity, acceleration = _berechne_ableitungen_fuer_diagramm(
 # ---------------------------------------------------------------------------
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(
-    x=df_plot['Zeit (ms)'], y=df_plot[s1_name],
-    name=s1_name, line=dict(color=FARBE_KANAL1),
-))
-fig.add_trace(go.Scatter(
-    x=df_plot['Zeit (ms)'], y=df_plot[s2_name],
-    name=s2_name, line=dict(color=FARBE_KANAL2),
-))
+
+for i, name in enumerate(sensor_namen):
+    fig.add_trace(go.Scatter(
+        x=df_plot['Zeit (ms)'], y=df_plot[name],
+        name=name, line=dict(color=KANAL_FARBEN[i]),
+    ))
+
 fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
 fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
 
@@ -918,13 +1228,39 @@ if has_vmax:
         mode='lines+markers', name='v-max',
         line=dict(color=FARBE_VMAX, width=2),
     ))
-if has_amax:
+if has_amax_falling:
     fig.add_trace(go.Scatter(
-        x=[t_amax], y=[y_amax],
+        x=[t_amax_falling], y=[y_amax_falling],
         mode='markers', name='a-max',
         marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
                     line=dict(color=FARBE_AMAX, width=2)),
     ))
+if has_amax_rising:
+    fig.add_trace(go.Scatter(
+        x=[t_amax_rising], y=[y_amax_rising],
+        mode='markers', name='a-min',
+        marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
+                    line=dict(color=FARBE_AMAX, width=2)),
+    ))
+if sop_linien:
+    erste_sichtbar = True
+    for t_sop, t0, t1, y_lvl in sop_linien:
+        if not (min_zeit <= t_sop <= max_zeit):
+            continue
+        fig.add_trace(go.Scatter(
+            x=[max(t0, min_zeit), min(t1, max_zeit)], y=[y_lvl, y_lvl],
+            mode='lines',
+            name='SOP' if erste_sichtbar else None,
+            showlegend=erste_sichtbar,
+            line=dict(color=FARBE_GESCHW, width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=[t_sop], y=[y_lvl],
+            mode='markers', showlegend=False,
+            marker=dict(color=FARBE_GESCHW, size=14, symbol='x',
+                        line=dict(color=FARBE_GESCHW, width=2)),
+        ))
+        erste_sichtbar = False
 if show_velocity and velocity is not None:
     fig.add_trace(go.Scatter(
         x=df_plot['Zeit (ms)'], y=velocity,
@@ -937,8 +1273,8 @@ if show_acceleration and acceleration is not None:
     ))
 
 # Y-Achse: 15 % Puffer über Signalbereich damit Legende den Graph nicht verdeckt
-y_max_plot   = float(df_plot[[s1_name, s2_name]].max().max())
-y_min_plot   = float(df_plot[[s1_name, s2_name]].min().min())
+y_max_plot   = float(df_plot[sensor_namen].max().max())
+y_min_plot   = float(df_plot[sensor_namen].min().min())
 y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
 
 fig.update_layout(
@@ -981,11 +1317,13 @@ with c_slider:
         "XA", min_zeit, max_zeit, value=xa,
         key="xa_sw", step=0.001, format="%.3f ms",
         on_change=update_xa_from_slider, label_visibility="collapsed",
+        help="Linker Cursor XA (ms) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
     )
     st.slider(
         "XB", min_zeit, max_zeit, value=xb,
         key="xb_sw", step=0.001, format="%.3f ms",
         on_change=update_xb_from_slider, label_visibility="collapsed",
+        help="Rechter Cursor XB (ms) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
     )
 
 # ---------------------------------------------------------------------------
@@ -998,7 +1336,8 @@ crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
 btn_col1, btn_col2 = st.columns(2)
 with btn_col1:
-    if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch"):
+    if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
+                 help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
         st.session_state.crop_start  = crop_t0
         st.session_state.crop_end    = crop_t1
         st.session_state.xa          = float(min(xa, xb))
@@ -1006,7 +1345,8 @@ with btn_col1:
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
-    if st.button("🔍 Show All", disabled=not crop_active, width="stretch"):
+    if st.button("🔍 Show All", disabled=not crop_active, width="stretch",
+                 help="Setzt den Crop zurück und zeigt den gesamten Messzeitraum."):
         st.session_state.crop_start  = None
         st.session_state.crop_end    = None
         st.session_state.zoom_token += 1
@@ -1023,20 +1363,26 @@ if crop_active:
 # ---------------------------------------------------------------------------
 
 freq_hz = (1000.0 / dt_val_ms) if dt_val_ms > 0 else float('nan')
-a_label = "a-max Falling" if accel_falling else "a-max Rising"
 hub_um  = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
 
-r1, r2, r3, r4 = st.columns(4)
-r1.metric("Δt (A-B)",         f"{dt_val_ms:.3f} ms")
-r2.metric("v-mid (A-B)",      f"{v_avg:.1f} mm/s")
-r3.metric("Δs (A-B)",         f"{dy_um:.1f} µm")
-r4.metric("v-max (Peak)",     f"{v_max:.1f} mm/s"          if not np.isnan(v_max) else "N/A")
+# Zeile 1 – Zeit & Weg
+z1, z2, z3, z4 = st.columns(4)
+z1.metric("Δt (A-B)",          f"{dt_val_ms:.3f} ms")
+z2.metric("Frequenz Δt (A-B)", f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A")
+z3.metric("Δs (A-B)",          f"{dy_um:.1f} µm")
+z4.metric("Hub Best-fit",      f"{hub_um:.1f} µm"           if not np.isnan(hub_um) else "N/A")
 
-r5, r6, r7, r8 = st.columns(4)
-r5.metric("Frequenz Δt (A-B)", f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A")
-r6.metric("Δv Cursor (A B)",   f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A")
-r7.metric("Hub Best-fit",      f"{hub_um:.1f} µm"           if not np.isnan(hub_um) else "N/A")
-r8.metric(a_label,             f"{a_max:.0f} m/s²"          if not np.isnan(a_max) else "N/A")
+# Zeile 2 – Geschwindigkeit (alle mm/s)
+g1, g2, g3, g4 = st.columns(4)
+g1.metric("v-mid (A-B)",       f"{v_avg:.1f} mm/s")
+g2.metric("Δv Cursor (A-B)",   f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric("v-max (Peak)",      f"{v_max:.1f} mm/s"          if not np.isnan(v_max) else "N/A")
+g4.metric("SOP",               f"{v_sop:.1f} mm/s"          if not np.isnan(v_sop) else "N/A")
+
+# Zeile 3 – Beschleunigung (beide m/s²)
+a1, a2 = st.columns(2)
+a1.metric("a-max Falling",     f"{a_max_falling:.0f} m/s²"  if not np.isnan(a_max_falling) else "N/A")
+a2.metric("a-min Rising",      f"{a_min_rising:.0f} m/s²"   if not np.isnan(a_min_rising) else "N/A")
 
 # ---------------------------------------------------------------------------
 # EXPORT
@@ -1044,50 +1390,61 @@ r8.metric(a_label,             f"{a_max:.0f} m/s²"          if not np.isnan(a_m
 
 st.sidebar.header("3. Export")
 metrics = {
+    # Zeit & Weg
     "XA (ms)":              f"{xa:.3f}",
     "XB (ms)":              f"{xb:.3f}",
     "Δt (A-B)":             f"{dt_val_ms:.3f} ms",
+    "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"           if not np.isnan(freq_hz) else "N/A",
     "Δs (A-B)":             f"{dy_um:.1f} µm",
+    "Hub Best-fit":         f"{hub_um:.1f} µm"            if not np.isnan(hub_um) else "N/A",
+    # Geschwindigkeit
     "v-mid (A-B)":          f"{v_avg:.1f} mm/s",
-    "Hub Best-fit":         f"{hub_um:.1f} µm"           if not np.isnan(hub_um) else "N/A",
-    "v-max (Peak)":         f"{v_max:.1f} mm/s"          if not np.isnan(v_max) else "N/A",
-    "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A",
-    "Δv Cursor (A B)":      f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A",
-    a_label:                f"{a_max:.0f} m/s²"          if not np.isnan(a_max) else "N/A",
+    "Δv Cursor (A-B)":      f"{v_cursor_delta:.1f} mm/s"  if not np.isnan(v_cursor_delta) else "N/A",
+    "v-max (Peak)":         f"{v_max:.1f} mm/s"           if not np.isnan(v_max) else "N/A",
+    "SOP":                  f"{v_sop:.1f} mm/s"           if not np.isnan(v_sop) else "N/A",
+    # Beschleunigung
+    "a-max Falling":        f"{a_max_falling:.0f} m/s²"   if not np.isnan(a_max_falling) else "N/A",
+    "a-min Rising":         f"{a_min_rising:.0f} m/s²"    if not np.isnan(a_min_rising) else "N/A",
 }
 export_format = st.sidebar.radio(
-    "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed"
+    "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
+    help="PDF enthält Diagramm und Kenngrößen-Tabelle; PNG ist nur das Diagramm.",
 )
-if st.sidebar.button("📥 Export erstellen", width="stretch"):
+if st.sidebar.button("📥 Export erstellen", width="stretch",
+                     help="Erstellt die Exportdatei im gewählten Format – Download-Button erscheint danach."):
     with st.spinner("Wird erstellt..."):
-        # Export nutzt den aktuell sichtbaren Bereich (Crop oder voll)
-        chart_png = build_chart_png(
-            df, s1_name, s2_name, active_sensor,
-            xa, xb, ya, yb, show_v_avg,
-            t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
-            t_amax, y_amax, has_amax,
-            show_rect_fit=show_rect_fit,
-            rect_fit=rect_fit,
-            show_velocity=show_velocity,
-            window_length=st.session_state.window_length,
-            show_acceleration=show_acceleration,
-            window_length_accel=st.session_state.window_length_accel,
-        )
-        stem = uploaded_file.name.rsplit('.', 1)[0]
-        if export_format == "PDF":
-            file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
-            st.sidebar.download_button(
-                label="💾 PDF herunterladen",
-                data=file_bytes_out,
-                file_name=f"{stem}_auswertung.pdf",
-                mime="application/pdf",
-                width="stretch",
+        try:
+            chart_png = build_chart_png(
+                df, sensor_namen, active_sensor,
+                xa, xb, ya, yb, show_v_avg,
+                t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
+                t_amax_falling, y_amax_falling, has_amax_falling,
+                t_amax_rising,  y_amax_rising,  has_amax_rising,
+                show_rect_fit=show_rect_fit,
+                rect_fit=rect_fit,
+                show_velocity=show_velocity,
+                window_length=st.session_state.window_length,
+                show_acceleration=show_acceleration,
+                window_length_accel=st.session_state.window_length_accel,
+                sop_linien=sop_linien,
             )
-        else:
-            st.sidebar.download_button(
-                label="💾 PNG herunterladen",
-                data=chart_png,
-                file_name=f"{stem}_diagramm.png",
-                mime="image/png",
-                width="stretch",
-            )
+            stem = uploaded_file.name.rsplit('.', 1)[0]
+            if export_format == "PDF":
+                file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
+                st.sidebar.download_button(
+                    label="💾 PDF herunterladen",
+                    data=file_bytes_out,
+                    file_name=f"{stem}_auswertung.pdf",
+                    mime="application/pdf",
+                    width="stretch",
+                )
+            else:
+                st.sidebar.download_button(
+                    label="💾 PNG herunterladen",
+                    data=chart_png,
+                    file_name=f"{stem}_diagramm.png",
+                    mime="image/png",
+                    width="stretch",
+                )
+        except Exception as exc:
+            st.sidebar.error(f"Export fehlgeschlagen: {exc}")

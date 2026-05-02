@@ -29,7 +29,7 @@ Python 3.11 required. Key packages: streamlit, pandas, plotly, kaleido, scipy, r
 
 ## Architecture
 
-All logic lives in a single file: `app.py` (~1000 lines). There are no modules, tests, or build steps.
+All logic lives in a single file: `app.py` (~1300 lines). There are no modules, tests, or build steps.
 
 **Data flow:**
 1. User uploads a CSV file in the sidebar
@@ -38,18 +38,19 @@ All logic lives in a single file: `app.py` (~1000 lines). There are no modules, 
 4. `apply_offsets` applies Y-axis corrections
 5. Velocity and acceleration are derived via Savitzky-Golay filter (scipy)
 6. `compute_best_fit_rectangle` detects rectangular pulse shapes for hub analysis
-7. Plotly renders an interactive multi-axis chart (displacement / velocity / acceleration)
-8. Metrics (Δt, Δs, v-mid, v-max, freq, Δv, hub, a-max) are displayed in a 2×4 card grid
-9. PDF export uses ReportLab; PNG export uses Kaleido
+7. `_finde_sop_kreuzungen` finds the Speed-on-Point crossing on the rising edge
+8. Plotly renders an interactive multi-axis chart (displacement / velocity / acceleration)
+9. Metrics are displayed in a 3-row card grid (Zeit/Weg, Geschwindigkeit, Beschleunigung)
+10. PDF export uses ReportLab; PNG export uses Kaleido (pinned to 0.2.1)
 
 ## Streamlit Session State Pattern
 
-To avoid widget feedback loops, the app uses a **two-key pattern** (documented at lines ~197–198 of app.py):
+To avoid widget feedback loops, the app uses a **two-key pattern** (documented near the top of the main block in app.py):
 
 - **Free keys** (`xa`, `xb`, `off1`, `off2`, …): hold canonical values, updated by callbacks
 - **Widget keys** (`xa_sw`, `xa_nw`, `xb_sw`, …): bound to sliders/number inputs; their `on_change` callbacks write back to the free keys
 
-Always maintain this separation when adding new interactive controls. The defaults dict (lines ~36–63) must be kept in sync with any new session state keys.
+Always maintain this separation when adding new interactive controls. The defaults dict (near the top of app.py) must be kept in sync with any new session state keys.
 
 ## UI Language
 
@@ -57,4 +58,4 @@ All user-facing text, variable names, and code comments are in **German**. Keep 
 
 ## Version
 
-Tracked as `VERSION = "v1.00.03"` at the top of `app.py`. Update this string when making notable changes.
+Tracked as `VERSION = "v1.00.05"` at the top of `app.py`. Update this string when making notable changes.

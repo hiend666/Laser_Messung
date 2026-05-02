@@ -7,27 +7,28 @@
   "mounts": [
     "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
   ],
+    
   "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "app.py"
-      ]
-    },
-    "vscode": {
+  "vscode": {
       "settings": {
         "python.defaultInterpreterPath": "/workspaces/Laser_Messung/.venv/bin/python",
         "python.terminal.activateEnvironment": true
       },
       "extensions": [
         "ms-python.python",
-        "ms-python.vscode-pylance"
+        "ms-python.vscode-pylance",
+        "Continue.continue"
+      ],
+       
+    "codespaces": {
+      "openFiles": [
+        "app.py"
       ]
+    }
     }
   },
   "updateContentCommand": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && echo '✅ venv erstellt und Requirements installiert'",
-  "postAttachCommand": {
-    "server": "/workspaces/Laser_Messung/.venv/bin/streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
+  "postStartCommand": "source /workspaces/Laser_Messung/.venv/bin/activate && streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false",
   "portsAttributes": {
     "8501": {
       "label": "Application",
