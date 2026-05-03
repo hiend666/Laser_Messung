@@ -187,21 +187,22 @@ def load_data(
         if data_start_idx == -1:
             raise ValueError("TXT-Datei enthält keinen gültigen '####Test Data####' Block.")
 
-        # Daten ab data_start_idx einlesen
-        data_lines = lines[data_start_idx:]
-        # Leere Zeilen und nicht-numerische Zeilen filtern
+        # Daten ab data_start_idx einlesen, Footer ab "####JSON Data####" ignorieren
         filtered_lines = []
-        for line in data_lines:
+        for line in lines[data_start_idx:]:
+            if "####JSON Data####" in line:
+                break
             line = line.strip()
             if not line:
                 continue
-            # Prüfe ob die Zeile numerische Daten enthält
             parts = line.split('\t')
             try:
                 float(parts[0])  # Erste Spalte sollte Zeit sein
                 filtered_lines.append(line)
             except (ValueError, IndexError):
                 continue
+            if nrows is not None and len(filtered_lines) >= nrows:
+                break
 
         if not filtered_lines:
             raise ValueError("Keine gültigen numerischen Daten in der TXT-Datei gefunden.")
