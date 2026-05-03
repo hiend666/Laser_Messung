@@ -116,6 +116,7 @@ defaults = {
     'sub_kanaele':    False,
     'sub_offsets':    False,
     'sub_grenzwerte': False,
+    'einstellungen':  True,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -414,6 +415,14 @@ def update_sample_rate_unit():
         if st.session_state.sample_rate > 0:
             st.session_state.sample_rate = 1_000_000.0 / st.session_state.sample_rate
         st.session_state.sample_rate_unit = new_unit
+
+
+def on_file_upload():
+    """Schließt Einstellungen-Expander beim Hochladen einer neuen Datei."""
+    if st.session_state.get('_file_uploader') is not None:
+        st.session_state.einstellungen = False
+        for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+            st.session_state[_k] = False
 
 
 def update_sample_rate_for_file_type():
@@ -814,10 +823,12 @@ file_extensions = ["csv"] if file_type == "CSV plain" else ["txt"]
 
 uploaded_file = st.sidebar.file_uploader(
     "upload", type=file_extensions, label_visibility="collapsed",
+    key="_file_uploader",
+    on_change=on_file_upload,
     help="Datei hochladen. CSV plain: Komma-getrennt. Hubmessung: TAB-getrennt mit fester Samplerate.",
 )
 
-# Beim Einklappen des Gesamt-Expanders auch alle Unter-Expander einklappen
+# Beim manuellen Einklappen des Gesamt-Expanders auch alle Unter-Expander einklappen
 _einst_prev = st.session_state.get('_einst_prev', True)
 _einst_curr = st.session_state.get('einstellungen', not bool(uploaded_file))
 if _einst_prev and not _einst_curr:
@@ -825,7 +836,7 @@ if _einst_prev and not _einst_curr:
         st.session_state[_k] = False
 st.session_state._einst_prev = _einst_curr
 
-with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file), key="einstellungen"):
+with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellungen, key="einstellungen"):
 
     with st.expander("Dateityp", expanded=st.session_state.sub_dateityp, key="sub_dateityp"):
         st.radio(
