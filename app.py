@@ -913,6 +913,9 @@ with st.sidebar.expander("Einstellungen", expanded=not bool(uploaded_file), key=
             st.session_state.crop_end       = None
             st.session_state.zoom_token    += 1
             st.session_state.last_file_name = uploaded_file.name
+            st.session_state.einstellungen  = False
+            for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+                st.session_state[_k] = False
             st.rerun()
 
         with st.expander("Manuelle Offsets (Y)", expanded=st.session_state.sub_offsets, key="sub_offsets"):
