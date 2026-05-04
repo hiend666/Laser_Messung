@@ -437,7 +437,11 @@ def update_sample_rate_for_file_type():
         st.session_state.ch2_name = ''
         st.session_state.ch3_name = ''
         st.session_state.ch4_name = ''
-    # Für CSV plain bleiben die Einstellungen wie sie sind
+    elif st.session_state.get('file_type_radio', 'CSV plain') == "CSV plain":
+        st.session_state.ch1_name = 'Festo'
+        st.session_state.ch2_name = 'DST'
+        st.session_state.ch3_name = ''
+        st.session_state.ch4_name = ''
 
 
 # ---------------------------------------------------------------------------
