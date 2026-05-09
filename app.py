@@ -22,7 +22,7 @@ from reportlab.lib.units import mm
 
 import reader
 
-VERSION = "v1.00.11"
+VERSION = "v1.00.12"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -109,10 +109,13 @@ defaults = {
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
     'crop_end': None,
+    'show_v_avg': False,
+    'show_rect_fit': False,
     'show_velocity': False,
     'window_length': 30,
     'show_acceleration': False,
     'window_length_accel': 40,
+    'show_sop': False,
     'sop_percent': 80,
     'v_axis_min': -3_200,
     'v_axis_max':  3_200,
@@ -151,7 +154,10 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
     'skip_rows', 'max_samples',
     'xa', 'xb',
-    'window_length', 'window_length_accel', 'sop_percent',
+    'show_v_avg', 'show_rect_fit',
+    'show_velocity', 'window_length',
+    'show_acceleration', 'window_length_accel',
+    'show_sop', 'sop_percent',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
 ]
 for _i in range(1, N_KANÄLE + 1):
@@ -183,6 +189,7 @@ def _yachsen_layout(
     v_einheit: str = 'mm/s',
     a_einheit: str = 'm/s²',
     kanal_farbe_map: dict[str, str] | None = None,
+    y_ranges_fallback: dict[str, list] | None = None,
 ) -> tuple[dict, dict, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
@@ -225,7 +232,11 @@ def _yachsen_layout(
     def _rng(e: str) -> list | None:
         lo = float(st.session_state.get(einheit_ss_key_min(e), 0))
         hi = float(st.session_state.get(einheit_ss_key_max(e), 0))
-        return [lo, hi] if not (lo == 0 and hi == 0) else None
+        if lo != 0 or hi != 0:
+            return [lo, hi]
+        if y_ranges_fallback and e in y_ranges_fallback:
+            return y_ranges_fallback[e]
+        return None
 
     # Rechte Achsen in Anzeigereihenfolge (innerst → äußerst)
     rechte_achsen: list[tuple[str, str, list | None, dict]] = []
@@ -402,12 +413,44 @@ _SUB_EXPANDER_KEYS = (
 )
 
 
+def _make_sub_expander_cb(this_key: str):
+    """Akkordeon-Callback: öffnet der Nutzer diesen Expander, werden alle anderen geschlossen."""
+    def _cb():
+        if st.session_state.get(this_key, False):
+            for _k in _SUB_EXPANDER_KEYS:
+                if _k != this_key:
+                    st.session_state[_k] = False
+    return _cb
+
+_SUB_EXPANDER_CBS = {k: _make_sub_expander_cb(k) for k in _SUB_EXPANDER_KEYS}
+
+
 def on_file_upload():
     """Schließt Einstellungen-Expander beim Hochladen einer neuen Datei."""
     if st.session_state.get('_file_uploader') is not None:
         st.session_state.einstellungen = False
         for _k in _SUB_EXPANDER_KEYS:
             st.session_state[_k] = False
+
+
+def on_settings_upload():
+    """Liest hochgeladene JSON-Einstellungen und schreibt sie in session_state.
+
+    Läuft als on_change-Callback vor dem Widget-Rendering – daher dürfen
+    hier alle Keys gesetzt werden, auch solche die Widget-Keys sind.
+    """
+    f = st.session_state.get('_settings_uploader')
+    if f is None:
+        st.session_state['_settings_load_status'] = None
+        return
+    try:
+        _loaded: dict = json.loads(f.read())
+        for _k, _v in _loaded.items():
+            if _k in EINSTELLUNGEN_KEYS:
+                st.session_state[_k] = _v
+        st.session_state['_settings_load_status'] = 'ok'
+    except Exception as _exc:
+        st.session_state['_settings_load_status'] = str(_exc)
 
 
 # Kanal-Presets je Dateityp – wird von update_sample_rate_for_file_type() genutzt
@@ -856,27 +899,10 @@ uploaded_file = st.sidebar.file_uploader(
     help="Datei hochladen. CSV plain / Oszilloskop CSV: .csv-Datei. Hubmessung: .txt-Datei.",
 )
 
-# Beim manuellen Einklappen des Gesamt-Expanders auch alle Unter-Expander einklappen
-_einst_prev = st.session_state.get('_einst_prev', True)
-_einst_curr = st.session_state.get('einstellungen', not bool(uploaded_file))
-if _einst_prev and not _einst_curr:
-    for _k in _SUB_EXPANDER_KEYS:
-        st.session_state[_k] = False
-st.session_state._einst_prev = _einst_curr
-
-# Akkordeon: wird ein Unter-Expander geöffnet, alle anderen schließen
-_sub_prev = st.session_state.get('_sub_prev', {k: False for k in _SUB_EXPANDER_KEYS})
-for _k in _SUB_EXPANDER_KEYS:
-    if st.session_state.get(_k, False) and not _sub_prev.get(_k, False):
-        for _other in _SUB_EXPANDER_KEYS:
-            if _other != _k:
-                st.session_state[_other] = False
-        break
-st.session_state['_sub_prev'] = {k: st.session_state.get(k, False) for k in _SUB_EXPANDER_KEYS}
 
 with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellungen, key="einstellungen"):
 
-    with st.expander("Dateityp", expanded=st.session_state.sub_dateityp, key="sub_dateityp"):
+    with st.expander("Dateityp", expanded=st.session_state.sub_dateityp, key="sub_dateityp", on_change=_SUB_EXPANDER_CBS['sub_dateityp']):
         st.radio(
             "Dateityp",
             ["CSV plain", "Hubmessung", "Oszilloskop CSV"],
@@ -885,7 +911,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             on_change=update_sample_rate_for_file_type,
         )
 
-    with st.expander("Einlesen", expanded=st.session_state.sub_einlesen, key="sub_einlesen"):
+    with st.expander("Einlesen", expanded=st.session_state.sub_einlesen, key="sub_einlesen", on_change=_SUB_EXPANDER_CBS['sub_einlesen']):
         if file_type == "Oszilloskop CSV":
             st.caption("Zeitachse wird aus der Datei gelesen.")
             # Platzhalter-Wert damit sample_rate weiter unten verfügbar ist
@@ -919,7 +945,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
-    with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele"):
+    with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele", on_change=_SUB_EXPANDER_CBS['sub_kanaele']):
         st.caption("Leeres Feld = Kanal nicht einlesen")
         # Für Oszilloskop: Einheiten aus Datei-Header vorlesen
         _osc_einheiten: list[str] = []
@@ -994,11 +1020,18 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.session_state.zoom_token    += 1
             st.session_state.last_file_name = uploaded_file.name
             st.session_state.einstellungen  = False
-            for _k in _SUB_EXPANDER_KEYS:
-                st.session_state[_k] = False
             st.rerun()
 
-        with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets"):
+        offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
+    else:
+        df_raw = None
+        sensor_namen = []
+        offs = tuple()
+
+    # Y-Offset und X-Offset außerhalb des if-Blocks – Expander müssen immer gerendert
+    # werden damit die Akkordeon-Callbacks zuverlässig funktionieren.
+    with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets", on_change=_SUB_EXPANDER_CBS['sub_offsets']):
+        if uploaded_file and df_raw is not None and sensor_namen:
             with st.container(border=True):
                 st.subheader("Auf 0 setzen")
                 n_ch     = len(sensor_namen)
@@ -1019,7 +1052,8 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     help="Y-Versatz für diesen Kanal (Bereich ±600).",
                 )
 
-        with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset"):
+    with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset", on_change=_SUB_EXPANDER_CBS['sub_xoffset']):
+        if uploaded_file and sensor_namen:
             for _xi, _xname in enumerate(sensor_namen):
                 st.number_input(
                     f"X-Offset {_xname} (ms)",
@@ -1028,12 +1062,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     help="Zeitversatz in ms – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
 
-        offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
-    else:
-        df_raw = None
-        sensor_namen = []
-        offs = tuple()
-
     # Aktive Einheiten aus konfigurierten Kanälen bestimmen
     _grenzw_einheiten = list(dict.fromkeys(
         st.session_state.get(f'ch{_i}_einheit', 'µm')
@@ -1041,7 +1069,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         if st.session_state.get(f'ch{_i}_name', '').strip()
     )) or ['µm']
 
-    with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte"):
+    with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte", on_change=_SUB_EXPANDER_CBS['sub_grenzwerte']):
         for _e in _grenzw_einheiten:
             st.caption(_e)
             _gc1, _gc2 = st.columns(2)
@@ -1062,7 +1090,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         _ac2.number_input("max (D2)", step=500.0, format="%.0f",
                           key="a_axis_max", label_visibility="collapsed")
 
-    with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern"):
+    with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern", on_change=_SUB_EXPANDER_CBS['sub_speichern']):
         _json_str = json.dumps(
             {k: st.session_state.get(k) for k in EINSTELLUNGEN_KEYS},
             indent=2, ensure_ascii=False,
@@ -1075,22 +1103,19 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             use_container_width=True,
             help="Alle aktuellen Einstellungen als JSON-Datei herunterladen.",
         )
-        _settings_upload = st.file_uploader(
+        st.file_uploader(
             "Einstellungen laden", type=["json"],
             key="_settings_uploader",
             label_visibility="collapsed",
             help="JSON-Datei mit gespeicherten Einstellungen hochladen.",
+            on_change=on_settings_upload,
         )
-        if _settings_upload is not None:
-            try:
-                _loaded: dict = json.loads(_settings_upload.read())
-                for _k, _v in _loaded.items():
-                    if _k in EINSTELLUNGEN_KEYS:
-                        st.session_state[_k] = _v
-                st.success("Einstellungen geladen.")
-                st.rerun()
-            except Exception as _exc:
-                st.error(f"Laden fehlgeschlagen: {_exc}")
+        _load_status = st.session_state.get('_settings_load_status')
+        if _load_status == 'ok':
+            st.success("Einstellungen geladen.")
+            st.session_state['_settings_load_status'] = None
+        elif _load_status is not None:
+            st.error(f"Laden fehlgeschlagen: {_load_status}")
 
 if sample_rate <= 0:
     st.sidebar.error("Samplerate muss größer als 0 sein.")
@@ -1271,14 +1296,14 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
         help="Mittelungsfenster für D-max, D2-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
 
-show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", value=False,
+show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", key="show_v_avg",
                                   help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate D (A-B).")
 show_rect_fit = st.sidebar.toggle(
-    "Rechteck-Fit füllen", value=False,
+    "Rechteck-Fit füllen", key="show_rect_fit",
     help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
 show_velocity = st.sidebar.toggle(
-    "D anzeigen (1. Ableitung)", value=False,
+    "D anzeigen (1. Ableitung)", key="show_velocity",
     help="Zeigt die 1. Ableitung des aktiven Kanals auf einer zweiten Y-Achse rechts.",
 )
 if show_velocity:
@@ -1289,7 +1314,7 @@ if show_velocity:
         help="Fenstergröße des Savitzky-Golay-Filters für die 1. Ableitung. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
-    "D2 anzeigen (2. Ableitung)", value=False,
+    "D2 anzeigen (2. Ableitung)", key="show_acceleration",
     help="Zeigt die 2. Ableitung des aktiven Kanals auf einer dritten Y-Achse rechts.",
 )
 if show_acceleration:
@@ -1301,7 +1326,7 @@ if show_acceleration:
     )
 
 show_sop = st.sidebar.toggle(
-    "Speed on Point (SOP)", value=False,
+    "Speed on Point (SOP)", key="show_sop",
     help="Misst die Geschwindigkeit an der steigenden Flanke des Rechtecksignals auf einem einstellbaren Hub-Pegel. Erfordert erkanntes Rechteck-Fit.",
 )
 if show_sop:
@@ -1456,12 +1481,30 @@ velocity, acceleration = _berechne_ableitungen_fuer_diagramm(
 # DIAGRAMM AUFBAUEN
 # ---------------------------------------------------------------------------
 
-# Y-Achse: 15 % Puffer – nur sichtbare Kanäle der primären Einheit berücksichtigen
+# Y-Bereiche aus vollständigen Daten (df_use) berechnen – Crop darf die Y-Achse nicht verschieben
 _prim_einheit = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen)), 'µm')
 _prim_namen   = [n for n in sichtbare_sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_einheit] or sichtbare_sensor_namen
-y_max_plot   = float(df_plot[_prim_namen].max().max())
-y_min_plot   = float(df_plot[_prim_namen].min().min())
+
+# Primäre Achse: Bereich aus vollständigem Datensatz
+_prim_namen_full = [n for n in _prim_namen if n in df_use.columns]
+_y_full_prim = df_use[_prim_namen_full] if _prim_namen_full else None
+if _y_full_prim is not None and not _y_full_prim.empty:
+    y_max_plot = float(_y_full_prim.max().max())
+    y_min_plot = float(_y_full_prim.min().min())
+else:
+    y_max_plot = float(df_plot[_prim_namen].max().max())
+    y_min_plot = float(df_plot[_prim_namen].min().min())
 y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
+
+# Fallback-Bereiche je Einheit aus vollständigem Datensatz – für Sekundärachsen
+_yrange_fallback: dict[str, list] = {}
+for _e in set(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen):
+    _cols_e = [n for n in sichtbare_sensor_namen if kanal_einheit_map.get(n, 'µm') == _e and n in df_use.columns]
+    if _cols_e:
+        _lo_e = float(df_use[_cols_e].min().min())
+        _hi_e = float(df_use[_cols_e].max().max())
+        _span_e = _hi_e - _lo_e
+        _yrange_fallback[_e] = [_lo_e, _hi_e + _span_e * 0.15]
 
 velocity_ok     = velocity is not None
 acceleration_ok = acceleration is not None
@@ -1471,6 +1514,7 @@ einheit_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layo
     show_velocity, velocity_ok, show_acceleration, acceleration_ok,
     v_einheit=v_einheit, a_einheit=a_einheit,
     kanal_farbe_map=_kanal_farbe_map,
+    y_ranges_fallback=_yrange_fallback,
 )
 active_yaxis = einheit_zu_yaxis.get(kanal_einheit_map.get(active_sensor, 'µm'), 'y')
 
@@ -1554,12 +1598,19 @@ if show_acceleration and acceleration is not None:
         name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
     ))
 
+_y_lim_keys = (
+    ['v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max']
+    + [einheit_ss_key_min(e) for e in EINHEIT_ALLE]
+    + [einheit_ss_key_max(e) for e in EINHEIT_ALLE]
+)
+_y_lim_token = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
+
 fig.update_layout(
     xaxis_title="Zeit (ms)",
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end]),
     **layout_yachsen,
 )
