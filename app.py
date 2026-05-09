@@ -3,10 +3,11 @@
 """
 Messdaten-Auswertung – Laservibrometer CSV.
 
-Zeigt Weg-, Geschwindigkeits- und Beschleunigungskurven und
+Zeigt Signal-, D- und D2-Kurven (1. und 2. Ableitung) und
 exportiert Ergebnisse als PDF oder PNG.
 """
 import io
+import json
 import datetime
 
 import streamlit as st
@@ -21,16 +22,28 @@ from reportlab.lib.units import mm
 
 import reader
 
-VERSION = "v1.00.07"
+VERSION = "v1.00.11"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
 # ---------------------------------------------------------------------------
 
-V_ACHSE_LIMIT_MM_S = 3_200    # Feste Y-Grenze Geschwindigkeitsachse  ± mm/s
-A_ACHSE_LIMIT_M_S2 = 20_000   # Feste Y-Grenze Beschleunigungsachse   ± m/s²
+MAX_PLOT_PUNKTE = 5_000     # Downsampling-Schwelle für interaktives Diagramm
 
-MAX_PLOT_PUNKTE    = 5_000     # Downsampling-Schwelle für interaktives Diagramm
+# Einheiten-Auswahl für Kanäle
+EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+EINHEIT_ALLE = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+
+N_KANÄLE = 4  # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
+
+def _einh_sfx(einheit: str) -> str:
+    return einheit.replace('µ', 'u').replace('°', 'deg').replace('%', 'pct').replace('/', 'p')
+
+def einheit_ss_key_min(einheit: str) -> str:
+    return 'ymin_' + _einh_sfx(einheit)
+
+def einheit_ss_key_max(einheit: str) -> str:
+    return 'ymax_' + _einh_sfx(einheit)
 
 # Diagramm-Farben – Kanäle
 FARBE_KANAL1    = '#003366'
@@ -40,8 +53,8 @@ FARBE_KANAL4    = '#2ca02c'
 KANAL_FARBEN    = [FARBE_KANAL1, FARBE_KANAL2, FARBE_KANAL3, FARBE_KANAL4]
 
 # Diagramm-Farben – Auswertung
-FARBE_GESCHW    = 'purple'
-FARBE_BESCHL    = 'orange'
+FARBE_D         = 'purple'
+FARBE_D2        = 'orange'
 FARBE_V_SCHNITT = 'green'
 FARBE_VMAX      = 'red'
 FARBE_AMAX      = 'orange'
@@ -75,15 +88,11 @@ st.markdown("""
 # Widget-Keys (xa_sw, xa_nw, …) gehören ausschließlich den Widgets;
 # ihre on_change-Callbacks schreiben in den freien Key zurück.
 # Externe Setter (Buttons, Auto-Reset) schreiben nur in freie Keys.
+# Kanal-Standardnamen und Oszilloskop-Skalierungen (Index 0 = Kanal 1)
+_CH_NAMEN_DEFAULT  = ['Festo', 'DST'] + [''] * (N_KANÄLE - 2)
+_OSC_SKALE_DEFAULT = [1.0, 1.0, 100.0] + [1.0] * (N_KANÄLE - 3)
+
 defaults = {
-    'off1': 0.0,
-    'off2': 0.0,
-    'off3': 0.0,
-    'off4': 0.0,
-    'off1_slider': 0.0,
-    'off2_slider': 0.0,
-    'off3_slider': 0.0,
-    'off4_slider': 0.0,
     'xa': 0.0,        # freie Wahrheitsquelle – nie Widget-Key
     'xb': 0.001,      # freie Wahrheitsquelle – nie Widget-Key
     'xa_sw': 0.0,     # Widget-Key: Slider XA
@@ -96,10 +105,6 @@ defaults = {
     'sample_rate_unit': 'µs',
     'sample_rate_unit_toggle': True,
     'skip_rows': 12,
-    'ch1_name': 'Festo',
-    'ch2_name': 'DST',
-    'ch3_name': '',   # leer = Kanal nicht einlesen
-    'ch4_name': '',   # leer = Kanal nicht einlesen
     'max_samples': 8000,
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
@@ -109,23 +114,157 @@ defaults = {
     'show_acceleration': False,
     'window_length_accel': 40,
     'sop_percent': 80,
-    'v_axis_limit': 3_200,
-    'a_axis_limit': 20_000,
+    'v_axis_min': -3_200,
+    'v_axis_max':  3_200,
+    'a_axis_min': -20_000,
+    'a_axis_max':  20_000,
     'sub_dateityp':   True,
     'sub_einlesen':   False,
     'sub_kanaele':    False,
     'sub_offsets':    False,
+    'sub_xoffset':    False,
     'sub_grenzwerte': False,
+    'sub_speichern':  False,
     'einstellungen':  True,
-    # Oszilloskop-spezifisch: Y-Skalierungsfaktor pro Kanal
-    'osc_skale_1': 1.0,
-    'osc_skale_2': 1.0,
-    'osc_skale_3': 1.0,
-    'osc_skale_4': 1.0,
 }
+# Pro-Kanal-Defaults per Loop – einzige Stelle mit kanalanzahlabhängiger Logik
+for _i in range(1, N_KANÄLE + 1):
+    defaults[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
+    defaults[f'ch{_i}_einheit'] = 'µm'
+    defaults[f'osc_skale_{_i}'] = _OSC_SKALE_DEFAULT[_i - 1]
+    defaults[f'off{_i}']        = 0.0
+    defaults[f'off{_i}_slider'] = 0.0
+    defaults[f'x_off{_i}']     = 0.0
+    defaults[f'show_ch{_i}']   = True
+# Y-Achsen-Grenzwerte pro Einheit (0 = automatisch)
+for _e in EINHEIT_ALLE:
+    defaults[einheit_ss_key_min(_e)] = 0.0
+    defaults[einheit_ss_key_max(_e)] = 0.0
+
 for key, val in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = val
+
+# Keys die beim JSON-Export/Import gespeichert werden
+EINSTELLUNGEN_KEYS: list[str] = [
+    'file_type_radio',
+    'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
+    'skip_rows', 'max_samples',
+    'xa', 'xb',
+    'window_length', 'window_length_accel', 'sop_percent',
+    'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
+]
+for _i in range(1, N_KANÄLE + 1):
+    EINSTELLUNGEN_KEYS += [
+        f'ch{_i}_name', f'ch{_i}_einheit', f'osc_skale_{_i}',
+        f'off{_i}', f'off{_i}_slider', f'x_off{_i}', f'show_ch{_i}',
+    ]
+for _e in EINHEIT_ALLE:
+    EINSTELLUNGEN_KEYS.append(einheit_ss_key_min(_e))
+    EINSTELLUNGEN_KEYS.append(einheit_ss_key_max(_e))
+
+
+# ---------------------------------------------------------------------------
+# GECACHTE DATENFUNKTIONEN  (Wrapper um reader.py – Streamlit-Caching hier)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HILFSFUNKTION – MULTI-ACHSEN-LAYOUT
+# ---------------------------------------------------------------------------
+
+def _yachsen_layout(
+    kanal_namen: list[str],
+    kanal_einheit_map: dict[str, str],
+    y_range_primaer,
+    show_velocity: bool,
+    velocity_ok: bool,
+    show_acceleration: bool,
+    acceleration_ok: bool,
+    v_einheit: str = 'mm/s',
+    a_einheit: str = 'm/s²',
+    kanal_farbe_map: dict[str, str] | None = None,
+) -> tuple[dict, dict, str, str, float]:
+    """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
+
+    Kanäle mit gleicher Einheit teilen sich eine Achse. Die erste Einheit
+    landet links, alle weiteren rechts. Achspositionen werden automatisch
+    berechnet so dass sich rechte Achsen nicht überlappen.
+
+    Gibt zurück:
+    - einheit_zu_yaxis: {'µm': 'y', 'V': 'y2', ...}
+    - layout_yachsen:   dict für fig.update_layout(**layout_yachsen)
+    - v_yaxis:          yaxis-String für Geschwindigkeit
+    - a_yaxis:          yaxis-String für Beschleunigung
+    - x_domain_end:     rechte Grenze des Plot-Bereichs (0…1)
+    """
+    STEP = 0.07
+
+    unique_einheiten = list(dict.fromkeys(
+        kanal_einheit_map.get(n, 'µm') for n in kanal_namen
+    ))
+    n_sig = len(unique_einheiten)
+
+    einheit_zu_yaxis = {e: ('y' if i == 0 else f'y{i+1}') for i, e in enumerate(unique_einheiten)}
+    v_yaxis = f'y{n_sig + 1}'
+    a_yaxis = f'y{n_sig + 2}'
+
+    # Erste Kanalfarbe je Einheit ermitteln
+    einheit_farbe: dict[str, str] = {}
+    if kanal_farbe_map:
+        for n in kanal_namen:
+            e = kanal_einheit_map.get(n, 'µm')
+            if e not in einheit_farbe:
+                einheit_farbe[e] = kanal_farbe_map.get(n, '#444444')
+
+    def _achsfarbe(einheit: str) -> dict:
+        farbe = einheit_farbe.get(einheit)
+        if not farbe:
+            return {}
+        return dict(color=farbe)
+
+    def _rng(e: str) -> list | None:
+        lo = float(st.session_state.get(einheit_ss_key_min(e), 0))
+        hi = float(st.session_state.get(einheit_ss_key_max(e), 0))
+        return [lo, hi] if not (lo == 0 and hi == 0) else None
+
+    # Rechte Achsen in Anzeigereihenfolge (innerst → äußerst)
+    rechte_achsen: list[tuple[str, str, list | None, dict]] = []
+    for i, e in enumerate(unique_einheiten[1:], 1):
+        rechte_achsen.append((f'yaxis{i + 1}', e, _rng(e), _achsfarbe(e)))
+    if show_velocity and velocity_ok:
+        v_lo = float(st.session_state.get('v_axis_min', 0))
+        v_hi = float(st.session_state.get('v_axis_max', 0))
+        v_rng = [v_lo, v_hi] if not (v_lo == 0 and v_hi == 0) else None
+        rechte_achsen.append((f'yaxis{n_sig + 1}', f'D ({v_einheit})', v_rng,
+                              dict(color=FARBE_D)))
+    if show_acceleration and acceleration_ok:
+        a_lo = float(st.session_state.get('a_axis_min', 0))
+        a_hi = float(st.session_state.get('a_axis_max', 0))
+        a_rng = [a_lo, a_hi] if not (a_lo == 0 and a_hi == 0) else None
+        rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng,
+                              dict(color=FARBE_D2)))
+
+    n_right = len(rechte_achsen)
+    x_domain_end = max(0.5, 1.0 - STEP * max(0, n_right - 1)) if n_right > 1 else 1.0
+
+    # Primäre linke Achse
+    e0   = unique_einheiten[0]
+    rng0 = _rng(e0)
+    layout_yachsen: dict = {
+        'yaxis': dict(title=e0, range=rng0 if rng0 else y_range_primaer,
+                      **_achsfarbe(e0))
+    }
+
+    # Rechte Achsen: Position von innen nach außen
+    for idx, (yk, title, rng, farb_dict) in enumerate(rechte_achsen):
+        pos = (x_domain_end + STEP * idx) if n_right > 1 else 1.0
+        ax: dict = dict(title=title, overlaying='y', side='right', showgrid=False,
+                        position=pos, anchor='free', **farb_dict)
+        if rng:
+            ax['range'] = rng
+        layout_yachsen[yk] = ax
+
+    return einheit_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end
 
 
 # ---------------------------------------------------------------------------
@@ -227,25 +366,25 @@ def update_xb_from_slider():
 def update_xb_from_num():
     st.session_state.xb = max(0.0, float(st.session_state.xb_nw))
 
-def update_off1_from_slider():
-    st.session_state.off1 = st.session_state.off1_slider
+def _make_off_cb(i: int):
+    def _cb(): st.session_state[f'off{i}'] = st.session_state[f'off{i}_slider']
+    return _cb
 
-def update_off2_from_slider():
-    st.session_state.off2 = st.session_state.off2_slider
+# Indizierter Zugriff via OFF_CALLBACKS[kanal_index_0basiert]
+OFF_CALLBACKS = [_make_off_cb(i) for i in range(1, N_KANÄLE + 1)]
 
-def update_off3_from_slider():
-    st.session_state.off3 = st.session_state.off3_slider
 
-def update_off4_from_slider():
-    st.session_state.off4 = st.session_state.off4_slider
+def _ableit_info(einheit: str) -> tuple[str, str, float, float]:
+    """(v_einheit, a_einheit, v_faktor, a_faktor) für eine Kanal-Einheit.
 
-# Indizierter Zugriff auf Offset-Callbacks (Index 0–3 entspricht Kanal 1–4)
-OFF_CALLBACKS = [
-    update_off1_from_slider,
-    update_off2_from_slider,
-    update_off3_from_slider,
-    update_off4_from_slider,
-]
+    Für µm: Umrechnung in konventionelle Einheiten (mm/s, m/s²).
+    Für alle anderen Einheiten: einheit/s und einheit/s² ohne Umrechnung.
+    v_faktor/a_faktor wandeln SG-Rohableitung ([einheit]/s, [einheit]/s²) in
+    die Anzeigeeinheit um.
+    """
+    if einheit == 'µm':
+        return 'mm/s', 'm/s²', 1e-3, 1e-6
+    return f'{einheit}/s', f'{einheit}/s²', 1.0, 1.0
 
 def update_sample_rate_unit():
     new_unit = "µs" if st.session_state.sample_rate_unit_toggle else "Hz"
@@ -256,35 +395,52 @@ def update_sample_rate_unit():
         st.session_state.sample_rate_unit = new_unit
 
 
+# Alle Keys der Unter-Expander im Einstellungen-Block (Reihenfolge = Anzeigereihenfolge)
+_SUB_EXPANDER_KEYS = (
+    'sub_dateityp', 'sub_einlesen', 'sub_kanaele',
+    'sub_offsets', 'sub_xoffset', 'sub_grenzwerte', 'sub_speichern',
+)
+
+
 def on_file_upload():
     """Schließt Einstellungen-Expander beim Hochladen einer neuen Datei."""
     if st.session_state.get('_file_uploader') is not None:
         st.session_state.einstellungen = False
-        for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+        for _k in _SUB_EXPANDER_KEYS:
             st.session_state[_k] = False
 
 
+# Kanal-Presets je Dateityp – wird von update_sample_rate_for_file_type() genutzt
+_DATEITYP_KANAELE: dict[str, list[dict]] = {
+    "Hubmessung": [
+        {'name': 'Hub',      'einheit': 'µm', 'skale': 1.0},
+    ],
+    "CSV plain": [
+        {'name': 'Festo',    'einheit': 'µm', 'skale': 1.0},
+        {'name': 'DST',      'einheit': 'µm', 'skale': 1.0},
+    ],
+    "Oszilloskop CSV": [
+        {'name': 'Strom',    'einheit': 'A',  'skale': 1.0},
+        {'name': 'Spannung', 'einheit': 'V',  'skale': 1.0},
+        {'name': 'Weg',      'einheit': 'µm', 'skale': 100.0},
+    ],
+}
+
+
 def update_sample_rate_for_file_type():
-    """Setzt die Samplerate automatisch basierend auf dem Dateityp."""
+    """Setzt Samplerate und Kanal-Defaults basierend auf dem Dateityp."""
     ft = st.session_state.get('file_type_radio', 'CSV plain')
     if ft == "Hubmessung":
         st.session_state.sample_rate = 2.55
         st.session_state.sample_rate_unit = "µs"
         st.session_state.sample_rate_unit_toggle = True
-        st.session_state.ch1_name = 'Hub'
-        st.session_state.ch2_name = ''
-        st.session_state.ch3_name = ''
-        st.session_state.ch4_name = ''
-    elif ft == "CSV plain":
-        st.session_state.ch1_name = 'Festo'
-        st.session_state.ch2_name = 'DST'
-        st.session_state.ch3_name = ''
-        st.session_state.ch4_name = ''
-    elif ft == "Oszilloskop CSV":
-        st.session_state.ch1_name = 'Kanal 1'
-        st.session_state.ch2_name = 'Kanal 2'
-        st.session_state.ch3_name = ''
-        st.session_state.ch4_name = ''
+    preset = _DATEITYP_KANAELE.get(ft, [])
+    for i in range(1, N_KANÄLE + 1):
+        cfg = preset[i - 1] if i - 1 < len(preset) else {}
+        st.session_state[f'ch{i}_name']    = cfg.get('name', '')
+        st.session_state[f'ch{i}_einheit'] = cfg.get('einheit', 'µm')
+        st.session_state[f'osc_skale_{i}'] = cfg.get('skale', 1.0)
+        st.session_state[f'show_ch{i}']    = True
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +457,13 @@ def _berechne_ableitungen_fuer_diagramm(
     sensor: str,
     show_velocity: bool,
     show_acceleration: bool,
+    v_faktor: float = 1e-3,
+    a_faktor: float = 1e-6,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Berechnet Geschwindigkeit (mm/s) und Beschleunigung (m/s²) für die Diagramm-Darstellung.
+    """Berechnet D (1. Ableitung) und D2 (2. Ableitung) für die Diagramm-Darstellung.
 
-    Gibt (velocity, acceleration) zurück, jeweils None wenn nicht aktiviert oder zu wenig Daten.
+    v_faktor/a_faktor wandeln die SG-Rohableitung in die Anzeigeeinheit um.
+    Gibt (d, d2) zurück, jeweils None wenn nicht aktiviert oder zu wenig Daten.
     """
     if len(df_quelle) <= 1:
         return None, None
@@ -315,12 +474,12 @@ def _berechne_ableitungen_fuer_diagramm(
     velocity = None
     if show_velocity:
         roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length, 1)
-        velocity = roh / 1000.0 if roh is not None else None          # µm/s → mm/s
+        velocity = roh * v_faktor if roh is not None else None
 
     acceleration = None
     if show_acceleration:
         roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length_accel, 2)
-        acceleration = roh / 1_000_000.0 if roh is not None else None  # µm/s² → m/s²
+        acceleration = roh * a_faktor if roh is not None else None
 
     return velocity, acceleration
 
@@ -331,6 +490,7 @@ def _zeichne_rechteck_fit(
     bereich_min: float,
     bereich_max: float,
     mit_fuellung: bool,
+    yaxis: str = 'y',
 ):
     """Fügt Rechteck-Fit-Traces und optionale Füllformen zum Diagramm hinzu."""
     for idx, run in enumerate(rect_fit['runs']):
@@ -345,6 +505,7 @@ def _zeichne_rechteck_fit(
             name='Rechteck-Fit' if idx == 0 else None,
             showlegend=(idx == 0),
             line=dict(color=FARBE_RECHTECK, dash='dash', width=2),
+            yaxis=yaxis,
         ))
         if mit_fuellung:
             for x_kante in (clipped_start, clipped_end):
@@ -353,6 +514,7 @@ def _zeichne_rechteck_fit(
                     x0=x_kante, x1=x_kante,
                     y0=rect_fit['y_low'], y1=rect_fit['y_high'],
                     line=dict(color=FARBE_RECHTECK, width=1, dash='dash'),
+                    yref=yaxis,
                 )
             fig.add_shape(
                 type='rect',
@@ -360,6 +522,7 @@ def _zeichne_rechteck_fit(
                 y0=rect_fit['y_low'], y1=rect_fit['y_high'],
                 line=dict(width=0),
                 fillcolor='rgba(0,255,0,0.08)',
+                yref=yaxis,
             )
 
 
@@ -374,12 +537,13 @@ def _finde_sop_kreuzungen(
     sop_percent: float,
     sample_rate: float,
     halbes_zeitfenster: int,
+    v_faktor: float = 1e-3,
 ) -> tuple[list, float]:
     """Findet SOP-Punkte an steigenden Flanken des Rechteck-Fits.
 
     Gibt (sop_linien, v_sop) zurück:
     - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level) für Diagramm-Linien
-    - v_sop:      Geschwindigkeit am ersten Kreuzungspunkt (mm/s), oder nan
+    - v_sop:      D am ersten Kreuzungspunkt (in Anzeigeeinheit), oder nan
     """
     hub = rect_fit['y_high'] - rect_fit['y_low']
     if hub <= 0:
@@ -408,7 +572,7 @@ def _finde_sop_kreuzungen(
         i0    = max(0, abs_idx - halbes_zeitfenster)
         i1    = min(n - 1, abs_idx + halbes_zeitfenster)
         dt_s  = (i1 - i0) / sample_rate
-        v_sop = ((signal[i1] - signal[i0]) / 1000.0) / dt_s if dt_s > 0 else float('nan')
+        v_sop = ((signal[i1] - signal[i0]) * v_faktor) / dt_s if dt_s > 0 else float('nan')
 
         # Linie: je 10 Samples links und rechts des Kreuzungspunkts
         t_sop    = float(zeit[abs_idx])
@@ -441,13 +605,21 @@ def build_chart_png(
     show_velocity=False, window_length=21,
     show_acceleration=False, window_length_accel=21,
     sop_linien=None,
-    y_einheit: str = "µm",
+    kanal_einheit_map: dict | None = None,
+    alle_sensor_namen: list[str] | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
+    if kanal_einheit_map is None:
+        kanal_einheit_map = {n: 'µm' for n in sensor_namen}
 
-    # Y-Achse: 15 % Puffer über Signalbereich damit Legende den Graph nicht verdeckt
-    y_max_e   = float(df[sensor_namen].max().max())
-    y_min_e   = float(df[sensor_namen].min().min())
+    _aktiv_e_e = kanal_einheit_map.get(active_sensor, 'µm')
+    v_einheit_e, a_einheit_e, v_faktor_e, a_faktor_e = _ableit_info(_aktiv_e_e)
+
+    # Y-Achse: 15 % Puffer – nur Kanäle der primären Einheit berücksichtigen
+    _prim_e = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sensor_namen)), 'µm')
+    _prim_n = [n for n in sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_e] or sensor_namen
+    y_max_e   = float(df[_prim_n].max().max())
+    y_min_e   = float(df[_prim_n].min().min())
     y_range_e = [y_min_e, y_max_e + (y_max_e - y_min_e) * 0.15]
 
     # Ableitungen für Export-Diagramm berechnen
@@ -457,17 +629,33 @@ def build_chart_png(
         dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / 1000.0
         if show_velocity:
             roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
-            velocity = roh / 1000.0 if roh is not None else None
+            velocity = roh * v_faktor_e if roh is not None else None
         if show_acceleration:
             roh = reader.berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
-            acceleration = roh / 1_000_000.0 if roh is not None else None
+            acceleration = roh * a_faktor_e if roh is not None else None
+
+    velocity_ok_e     = velocity is not None
+    acceleration_ok_e = acceleration is not None
+    _alle_e = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
+    _kanal_farbe_e = {name: KANAL_FARBEN[_alle_e.index(name) if name in _alle_e else 0]
+                     for name in sensor_namen}
+    einheit_zu_yaxis_e, layout_yachsen_e, v_yaxis_e, a_yaxis_e, x_domain_end_e = _yachsen_layout(
+        sensor_namen, kanal_einheit_map, y_range_e,
+        show_velocity, velocity_ok_e, show_acceleration, acceleration_ok_e,
+        v_einheit=v_einheit_e, a_einheit=a_einheit_e,
+        kanal_farbe_map=_kanal_farbe_e,
+    )
+    active_yaxis_e = einheit_zu_yaxis_e.get(kanal_einheit_map.get(active_sensor, 'µm'), 'y')
 
     export_fig = go.Figure()
 
-    for i, name in enumerate(sensor_namen):
+    _alle = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
+    for name in sensor_namen:
+        _ci = _alle.index(name) if name in _alle else 0
         export_fig.add_trace(go.Scatter(
             x=df['Zeit (ms)'], y=df[name],
-            name=name, line=dict(color=KANAL_FARBEN[i]),
+            name=name, line=dict(color=KANAL_FARBEN[_ci]),
+            yaxis=einheit_zu_yaxis_e.get(kanal_einheit_map.get(name, 'µm'), 'y'),
         ))
 
     export_fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
@@ -476,36 +664,40 @@ def build_chart_png(
     if show_v_avg:
         export_fig.add_trace(go.Scatter(
             x=[xa, xb], y=[ya, yb],
-            mode='lines+markers', name='v-Schnitt',
+            mode='lines+markers', name='Schnittlinie',
             line=dict(color=FARBE_V_SCHNITT, width=2, dash='dot'),
+            yaxis=active_yaxis_e,
         ))
 
     if rect_fit is not None:
         _zeichne_rechteck_fit(
             export_fig, rect_fit,
             df['Zeit (ms)'].min(), df['Zeit (ms)'].max(),
-            mit_fuellung=show_rect_fit,
+            mit_fuellung=show_rect_fit, yaxis=active_yaxis_e,
         )
 
     if has_vmax and t_vmax_start is not None:
         export_fig.add_trace(go.Scatter(
             x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
-            mode='lines+markers', name='v-max',
+            mode='lines+markers', name='D-max',
             line=dict(color=FARBE_VMAX, width=2),
+            yaxis=active_yaxis_e,
         ))
     if has_amax_falling and t_amax_falling is not None:
         export_fig.add_trace(go.Scatter(
             x=[t_amax_falling], y=[y_amax_falling],
-            mode='markers', name='a-max',
+            mode='markers', name='D2-max',
             marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
                         line=dict(color=FARBE_AMAX, width=2)),
+            yaxis=active_yaxis_e,
         ))
     if has_amax_rising and t_amax_rising is not None:
         export_fig.add_trace(go.Scatter(
             x=[t_amax_rising], y=[y_amax_rising],
-            mode='markers', name='a-min',
+            mode='markers', name='D2-min',
             marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
                         line=dict(color=FARBE_AMAX, width=2)),
+            yaxis=active_yaxis_e,
         ))
     if sop_linien:
         t_min_export   = float(df['Zeit (ms)'].min())
@@ -519,54 +711,38 @@ def build_chart_png(
                 mode='lines',
                 name='SOP' if erste_sichtbar else None,
                 showlegend=erste_sichtbar,
-                line=dict(color=FARBE_GESCHW, width=2),
+                line=dict(color=FARBE_D, width=2),
+                yaxis=active_yaxis_e,
             ))
             export_fig.add_trace(go.Scatter(
                 x=[t_sop], y=[y_lvl],
                 mode='markers', showlegend=False,
-                marker=dict(color=FARBE_GESCHW, size=14, symbol='x',
-                            line=dict(color=FARBE_GESCHW, width=2)),
+                marker=dict(color=FARBE_D, size=14, symbol='x',
+                            line=dict(color=FARBE_D, width=2)),
+                yaxis=active_yaxis_e,
             ))
             erste_sichtbar = False
     if show_velocity and velocity is not None:
         export_fig.add_trace(go.Scatter(
             x=df['Zeit (ms)'], y=velocity,
-            name='Geschwindigkeit', yaxis='y2', line=dict(color=FARBE_GESCHW),
+            name='D', yaxis=v_yaxis_e, line=dict(color=FARBE_D),
         ))
     if show_acceleration and acceleration is not None:
         export_fig.add_trace(go.Scatter(
             x=df['Zeit (ms)'], y=acceleration,
-            name='Beschleunigung', yaxis='y3', line=dict(color=FARBE_BESCHL),
+            name='D2', yaxis=a_yaxis_e, line=dict(color=FARBE_D2),
         ))
 
     export_fig.update_layout(
         xaxis_title="Zeit (ms)",
-        yaxis_title=f"Messgröße ({y_einheit})",
         height=500,
         hovermode="x unified",
         legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-        xaxis=dict(autorange=True, rangemode='nonnegative'),
-        yaxis=dict(range=y_range_e),
+        xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end_e]),
         plot_bgcolor='white',
         paper_bgcolor='white',
+        **layout_yachsen_e,
     )
-    if show_velocity and velocity is not None:
-        export_fig.update_layout(
-            yaxis2=dict(
-                title='Geschwindigkeit (mm/s)',
-                overlaying='y', side='right', showgrid=False,
-                range=[-st.session_state.v_axis_limit, st.session_state.v_axis_limit],
-            )
-        )
-    if show_acceleration and acceleration is not None:
-        export_fig.update_layout(
-            yaxis3=dict(
-                title='Beschleunigung (m/s²)',
-                overlaying='y', side='right', showgrid=False,
-                position=0.85 if show_velocity else 1.0,
-                range=[-st.session_state.a_axis_limit, st.session_state.a_axis_limit],
-            )
-        )
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
 
 
@@ -684,9 +860,19 @@ uploaded_file = st.sidebar.file_uploader(
 _einst_prev = st.session_state.get('_einst_prev', True)
 _einst_curr = st.session_state.get('einstellungen', not bool(uploaded_file))
 if _einst_prev and not _einst_curr:
-    for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+    for _k in _SUB_EXPANDER_KEYS:
         st.session_state[_k] = False
 st.session_state._einst_prev = _einst_curr
+
+# Akkordeon: wird ein Unter-Expander geöffnet, alle anderen schließen
+_sub_prev = st.session_state.get('_sub_prev', {k: False for k in _SUB_EXPANDER_KEYS})
+for _k in _SUB_EXPANDER_KEYS:
+    if st.session_state.get(_k, False) and not _sub_prev.get(_k, False):
+        for _other in _SUB_EXPANDER_KEYS:
+            if _other != _k:
+                st.session_state[_other] = False
+        break
+st.session_state['_sub_prev'] = {k: st.session_state.get(k, False) for k in _SUB_EXPANDER_KEYS}
 
 with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellungen, key="einstellungen"):
 
@@ -739,32 +925,36 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         _osc_einheiten: list[str] = []
         if file_type == "Oszilloskop CSV" and uploaded_file:
             _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
-        for _ki, (_ch_key, _skale_key) in enumerate(
-            [('ch1_name', 'osc_skale_1'), ('ch2_name', 'osc_skale_2'),
-             ('ch3_name', 'osc_skale_3'), ('ch4_name', 'osc_skale_4')]
-        ):
-            _einheit_hint = f" [{_osc_einheiten[_ki]}]" if _ki < len(_osc_einheiten) else ""
-            st.text_input(
-                f"Kanal {_ki+1} Name{_einheit_hint}", key=_ch_key,
+        for _ki in range(N_KANÄLE):
+            _i         = _ki + 1
+            _ch_key    = f'ch{_i}_name'
+            _einh_key  = f'ch{_i}_einheit'
+            _skale_key = f'osc_skale_{_i}'
+            _osc_hint  = f" [{_osc_einheiten[_ki]}]" if _ki < len(_osc_einheiten) else ""
+            _cur_einh  = st.session_state.get(_einh_key, 'µm')
+            _einh_opts = EINHEIT_OPTIONEN if _cur_einh in EINHEIT_OPTIONEN else [_cur_einh] + EINHEIT_OPTIONEN
+            _col_name, _col_skale, _col_einh = st.columns([2, 1, 1])
+            _col_name.text_input(
+                f"Kanal {_i}{_osc_hint}", key=_ch_key,
+                max_chars=12,
                 help="Leer lassen um diesen Kanal nicht einzulesen.",
             )
             if file_type == "Oszilloskop CSV":
-                st.number_input(
-                    f"Kanal {_ki+1} Skalierung",
-                    value=st.session_state[_skale_key],
-                    step=0.001, format="%.4f",
-                    key=_skale_key,
-                    help="Y-Achsen-Skalierungsfaktor (Rohwert × Faktor). Standard: 1.0",
+                _col_skale.number_input(
+                    "×", value=st.session_state[_skale_key],
+                    step=0.01, format="%.2f", key=_skale_key,
+                    help="Skalierungsfaktor (Rohwert × Faktor).",
                 )
+            _col_einh.selectbox(
+                "Einheit", _einh_opts, key=_einh_key,
+                help="Physikalische Einheit – bestimmt die Y-Achse.",
+            )
 
     if uploaded_file:
-        _kanal_cfg = [
-            st.session_state.ch1_name.strip(),
-            st.session_state.ch2_name.strip(),
-            st.session_state.ch3_name.strip(),
-            st.session_state.ch4_name.strip(),
-        ]
+        _kanal_cfg = [st.session_state.get(f'ch{i}_name', '').strip() for i in range(1, N_KANÄLE + 1)]
         kanal_namen_tuple = tuple(n for n in _kanal_cfg if n)
+        # Kanalname → 1-basierte Kanal-Nummer (für show_chN Keys)
+        _sensor_ch_num = {name: i + 1 for i, name in enumerate(_kanal_cfg) if name}
 
         if len(kanal_namen_tuple) < 1:
             st.sidebar.error("Mindestens ein Kanalname muss angegeben werden.")
@@ -794,7 +984,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 off_init = float(df_raw[name].min()) * -1.0
                 st.session_state[f'off{i}']        = off_init
                 st.session_state[f'off{i}_slider'] = off_init
-            for i in range(len(sensor_namen) + 1, 5):
+            for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
                 st.session_state[f'off{i}']        = 0.0
                 st.session_state[f'off{i}_slider'] = 0.0
             st.session_state.xa             = total_time_ms * 0.30
@@ -804,18 +994,18 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.session_state.zoom_token    += 1
             st.session_state.last_file_name = uploaded_file.name
             st.session_state.einstellungen  = False
-            for _k in ('sub_dateityp', 'sub_einlesen', 'sub_kanaele', 'sub_offsets', 'sub_grenzwerte'):
+            for _k in _SUB_EXPANDER_KEYS:
                 st.session_state[_k] = False
             st.rerun()
 
-        with st.expander("Manuelle Offsets (Y)", expanded=st.session_state.sub_offsets, key="sub_offsets"):
+        with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets"):
             with st.container(border=True):
-                st.subheader("Set to 0")
+                st.subheader("Auf 0 setzen")
                 n_ch     = len(sensor_namen)
                 btn_cols = st.columns(n_ch)
                 for i, name in enumerate(sensor_namen):
                     if btn_cols[i].button(f"{name}", use_container_width=True,
-                                          help="Setzt den Offset so, dass der Minimalwert auf 0 µm liegt.", key=f"auto0_{i}"):
+                                          help="Setzt den Y-Offset so, dass der Minimalwert des Kanals auf 0 liegt.", key=f"auto0_{i}"):
                         val = float(df_raw[name].min()) * -1.0
                         st.session_state[f'off{i+1}']        = val
                         st.session_state[f'off{i+1}_slider'] = val
@@ -824,9 +1014,18 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.markdown("")
             for i, name in enumerate(sensor_namen):
                 st.slider(
-                    f"Offset {name}", -600.0, 600.0, step=0.1,
+                    name, -600.0, 600.0, step=0.1,
                     key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
-                    help="Y-Versatz für diesen Kanal in µm (Bereich ±600 µm).",
+                    help="Y-Versatz für diesen Kanal (Bereich ±600).",
+                )
+
+        with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset"):
+            for _xi, _xname in enumerate(sensor_namen):
+                st.number_input(
+                    f"X-Offset {_xname} (ms)",
+                    step=0.1, format="%.3f",
+                    key=f'x_off{_xi+1}',
+                    help="Zeitversatz in ms – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
 
         offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
@@ -835,21 +1034,63 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         sensor_namen = []
         offs = tuple()
 
+    # Aktive Einheiten aus konfigurierten Kanälen bestimmen
+    _grenzw_einheiten = list(dict.fromkeys(
+        st.session_state.get(f'ch{_i}_einheit', 'µm')
+        for _i in range(1, N_KANÄLE + 1)
+        if st.session_state.get(f'ch{_i}_name', '').strip()
+    )) or ['µm']
+
     with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte"):
-        st.number_input(
-            "Geschwindigkeit ± (mm/s)",
-            min_value=100,
-            max_value=20_000,
-            step=100,
-            key="v_axis_limit",
+        for _e in _grenzw_einheiten:
+            st.caption(_e)
+            _gc1, _gc2 = st.columns(2)
+            _gc1.number_input(f"min ({_e})", step=1.0, format="%.2f",
+                              key=einheit_ss_key_min(_e), label_visibility="collapsed")
+            _gc2.number_input(f"max ({_e})", step=1.0, format="%.2f",
+                              key=einheit_ss_key_max(_e), label_visibility="collapsed")
+        st.caption("D (1. Ableitung)")
+        _vc1, _vc2 = st.columns(2)
+        _vc1.number_input("min (D)", step=100.0, format="%.0f",
+                          key="v_axis_min", label_visibility="collapsed")
+        _vc2.number_input("max (D)", step=100.0, format="%.0f",
+                          key="v_axis_max", label_visibility="collapsed")
+        st.caption("D2 (2. Ableitung)")
+        _ac1, _ac2 = st.columns(2)
+        _ac1.number_input("min (D2)", step=500.0, format="%.0f",
+                          key="a_axis_min", label_visibility="collapsed")
+        _ac2.number_input("max (D2)", step=500.0, format="%.0f",
+                          key="a_axis_max", label_visibility="collapsed")
+
+    with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern"):
+        _json_str = json.dumps(
+            {k: st.session_state.get(k) for k in EINSTELLUNGEN_KEYS},
+            indent=2, ensure_ascii=False,
         )
-        st.number_input(
-            "Beschleunigung ± (m/s²)",
-            min_value=1_000,
-            max_value=50_000,
-            step=500,
-            key="a_axis_limit",
+        st.download_button(
+            "💾 Einstellungen speichern",
+            data=_json_str,
+            file_name="einstellungen.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Alle aktuellen Einstellungen als JSON-Datei herunterladen.",
         )
+        _settings_upload = st.file_uploader(
+            "Einstellungen laden", type=["json"],
+            key="_settings_uploader",
+            label_visibility="collapsed",
+            help="JSON-Datei mit gespeicherten Einstellungen hochladen.",
+        )
+        if _settings_upload is not None:
+            try:
+                _loaded: dict = json.loads(_settings_upload.read())
+                for _k, _v in _loaded.items():
+                    if _k in EINSTELLUNGEN_KEYS:
+                        st.session_state[_k] = _v
+                st.success("Einstellungen geladen.")
+                st.rerun()
+            except Exception as _exc:
+                st.error(f"Laden fehlgeschlagen: {_exc}")
 
 if sample_rate <= 0:
     st.sidebar.error("Samplerate muss größer als 0 sein.")
@@ -861,15 +1102,14 @@ if not uploaded_file:
 
 # ---------------------------------------------------------------------------
 # KANAL-KONFIGURATION – aktive Kanäle aus Einstellungen ableiten
+# _kanal_cfg und kanal_namen_tuple wurden bereits im Sidebar-Block gesetzt.
 # ---------------------------------------------------------------------------
 
-_kanal_cfg = [
-    st.session_state.ch1_name.strip(),
-    st.session_state.ch2_name.strip(),
-    st.session_state.ch3_name.strip(),
-    st.session_state.ch4_name.strip(),
-]
-kanal_namen_tuple = tuple(n for n in _kanal_cfg if n)
+kanal_einheit_map = {
+    nm: st.session_state.get(f'ch{i}_einheit', 'µm')
+    for i, nm in enumerate(_kanal_cfg, 1)
+    if nm
+}
 
 if len(kanal_namen_tuple) < 1:
     st.sidebar.error("Mindestens ein Kanalname muss angegeben sein.")
@@ -906,26 +1146,42 @@ df_full, sample_rate = reader.build_display_df(
     df_raw, file_type, sample_rate, kanal_namen_tuple, offs
 )
 
-# Y-Achsen-Einheit: für Oszilloskop aus dem Datei-Header, sonst µm
-if file_type == "Oszilloskop CSV":
-    _, _osc_einh_main = reader.peek_oszilloskop_header(file_bytes)
-    y_einheit = _osc_einh_main[0] if _osc_einh_main else "V"
+# ---------------------------------------------------------------------------
+# USE-DATA – X-Offset als Sample-Shift einbauen
+# RAW → [scale + Y-offset] = df_full   →   [X-shift] = df_use   →   [Crop] = df
+# ---------------------------------------------------------------------------
+
+_x_offs = [float(st.session_state.get(f'x_off{i+1}', 0.0)) for i in range(len(sensor_namen))]
+if any(v != 0.0 for v in _x_offs) and len(df_full) > 1:
+    _dt_ms = float(df_full['Zeit (ms)'].iloc[1] - df_full['Zeit (ms)'].iloc[0])
+    df_use = df_full.copy()
+    for _si, _sname in enumerate(sensor_namen):
+        _n = int(round(_x_offs[_si] / _dt_ms)) if _dt_ms > 0 else 0
+        if _n != 0:
+            _col = np.roll(df_use[_sname].values, _n)
+            if _n > 0:
+                _col[:_n] = np.nan
+            else:
+                _col[_n:] = np.nan
+            df_use[_sname] = _col
 else:
-    y_einheit = "µm"
+    df_use = df_full
 
 # ---------------------------------------------------------------------------
 # AUTO-RESET BEI NEUER DATEI
 # ---------------------------------------------------------------------------
 
 if st.session_state.last_file_name != uploaded_file.name:
-    total_time_ms = float(df_full['Zeit (ms)'].iloc[-1])
+    total_time_ms = float(df_use['Zeit (ms)'].iloc[-1])
     for i, name in enumerate(sensor_namen, 1):
         off_init = float(df_raw[name].min()) * -1.0
         st.session_state[f'off{i}']        = off_init
         st.session_state[f'off{i}_slider'] = off_init
-    for i in range(len(sensor_namen) + 1, 5):
+    for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
         st.session_state[f'off{i}']        = 0.0
         st.session_state[f'off{i}_slider'] = 0.0
+    for i in range(1, N_KANÄLE + 1):
+        st.session_state[f'x_off{i}'] = 0.0
     st.session_state.xa             = total_time_ms * 0.30
     st.session_state.xb             = total_time_ms * 0.50
     st.session_state.crop_start     = None
@@ -934,8 +1190,8 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.last_file_name = uploaded_file.name
     st.rerun()
 
-max_zeit_full = float(df_full['Zeit (ms)'].iloc[-1])
-max_idx_full  = len(df_full) - 1
+max_zeit_full = float(df_use['Zeit (ms)'].iloc[-1])
+max_idx_full  = len(df_use) - 1
 
 # ---------------------------------------------------------------------------
 # CROP-LOGIK
@@ -948,12 +1204,12 @@ crop_active = (
 if crop_active:
     ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full)
     ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full)
-    df       = df_full.iloc[ci_start:ci_end + 1].reset_index(drop=True)
+    df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
     min_zeit = float(df['Zeit (ms)'].iloc[0])
     max_zeit = float(df['Zeit (ms)'].iloc[-1])
     max_idx  = len(df) - 1
 else:
-    df       = df_full
+    df       = df_use
     min_zeit = 0.0
     max_zeit = max_zeit_full
     max_idx  = max_idx_full
@@ -966,8 +1222,27 @@ st.sidebar.header("2. Auswertung")
 active_sensor = st.sidebar.radio(
     "Kanal für Messung:", sensor_namen,
     horizontal=True, label_visibility="collapsed",
-    help="Aktiver Kanal für alle Berechnungen: Cursor-Messung, v-max, a-max und SOP.",
+    help="Aktiver Kanal für alle Berechnungen: Cursor-Messung, D-max, D2-max und SOP.",
 )
+
+st.sidebar.caption("Anzeige", help="Kanäle ein-/ausblenden. Der aktive Mess-Kanal ist immer sichtbar.")
+_anz_cols = st.sidebar.columns(3)
+for _ai, _aname in enumerate(sensor_namen):
+    _ch_n = _sensor_ch_num[_aname]
+    _anz_cols[_ai % 3].checkbox(
+        _aname,
+        key=f'show_ch{_ch_n}',
+        disabled=(_aname == active_sensor),
+    )
+
+sichtbare_sensor_namen = [
+    name for name in sensor_namen
+    if st.session_state.get(f'show_ch{_sensor_ch_num[name]}', True) or name == active_sensor
+]
+
+# Ableitungs-Einheiten und Konversionsfaktoren für den aktiven Kanal
+_aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
+v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit)
 
 # Cursor-Werte auf aktiven Zeitbereich begrenzen
 xa = float(np.clip(st.session_state.xa, min_zeit, max_zeit))
@@ -980,49 +1255,49 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
         "Zeit XA (ms)", min_zeit, max_zeit,
         value=xa, step=0.001, format="%.3f",
         key="xa_nw", on_change=update_xa_from_num,
-        help="Linker Zeitcursor in ms – Startpunkt für Δt, Δs und v-mid.",
+        help="Linker Zeitcursor in ms – Startpunkt für Δt, Δs und D (A-B).",
     )
     st.number_input(
         "Zeit XB (ms)", min_zeit, max_zeit,
         value=xb, step=0.001, format="%.3f",
         key="xb_nw", on_change=update_xb_from_num,
-        help="Rechter Zeitcursor in ms – Endpunkt für Δt, Δs und v-mid.",
+        help="Rechter Zeitcursor in ms – Endpunkt für Δt, Δs und D (A-B).",
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
     v_time_base_ms = st.slider(
-        "Zeitbasis v-max (ms)", 0.010, 0.10, 0.03,
+        "Zeitbasis D-max (ms)", 0.010, 0.10, 0.03,
         step=0.005, format="%.3f ms",
-        help="Mittelungsfenster für v-max, a-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
+        help="Mittelungsfenster für D-max, D2-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
 
-show_v_avg    = st.sidebar.toggle("v-Schnitt Linie (A-B) anzeigen", value=False,
-                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Geschwindigkeit v-mid.")
+show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", value=False,
+                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate D (A-B).")
 show_rect_fit = st.sidebar.toggle(
-    "Best-fit Rechteck füllen", value=False,
+    "Rechteck-Fit füllen", value=False,
     help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
 show_velocity = st.sidebar.toggle(
-    "Geschwindigkeit anzeigen", value=False,
-    help="Zeigt die Geschwindigkeit (mm/s) des aktiven Kanals auf einer zweiten Y-Achse rechts. Achse fest auf ±3200 mm/s.",
+    "D anzeigen (1. Ableitung)", value=False,
+    help="Zeigt die 1. Ableitung des aktiven Kanals auf einer zweiten Y-Achse rechts.",
 )
 if show_velocity:
     st.sidebar.slider(
-        "Glättung Geschwindigkeit", 5, 80, step=1,
+        "Glättung D", 5, 80, step=1,
         value=st.session_state.window_length,
         key="window_length",
-        help="Fenstergröße des Savitzky-Golay-Filters für die Geschwindigkeitskurve. Größer = glatter, aber geringere Detailauflösung.",
+        help="Fenstergröße des Savitzky-Golay-Filters für die 1. Ableitung. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
-    "Beschleunigung anzeigen", value=False,
-    help="Zeigt die Beschleunigung (m/s²) des aktiven Kanals auf einer dritten Y-Achse rechts. Achse fest auf ±12000 m/s².",
+    "D2 anzeigen (2. Ableitung)", value=False,
+    help="Zeigt die 2. Ableitung des aktiven Kanals auf einer dritten Y-Achse rechts.",
 )
 if show_acceleration:
     st.sidebar.slider(
-        "Glättung Beschleunigung", 10, 75, step=1,
+        "Glättung D2", 10, 75, step=1,
         value=st.session_state.window_length_accel,
         key="window_length_accel",
-        help="Fenstergröße des Savitzky-Golay-Filters für die Beschleunigungskurve. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
+        help="Fenstergröße des Savitzky-Golay-Filters für die 2. Ableitung. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
     )
 
 show_sop = st.sidebar.toggle(
@@ -1039,8 +1314,8 @@ if show_sop:
 
 # Rechteck-Fit auf den vollständigen (ungecropten) Datensatz anwenden
 rect_fit = compute_best_fit_rectangle(
-    df_full['Zeit (ms)'].values,
-    df_full[active_sensor].values,
+    df_use['Zeit (ms)'].values,
+    df_use[active_sensor].values,
 )
 
 # ---------------------------------------------------------------------------
@@ -1058,22 +1333,23 @@ else:
 ya = df.loc[idx_a, active_sensor]
 yb = df.loc[idx_b, active_sensor]
 
-dt_val_ms = abs(xb - xa)                                   # ms
-dy_um     = abs(yb - ya)                                   # µm
-v_avg     = dy_um / dt_val_ms if dt_val_ms > 0 else 0.0   # mm/s  (µm/ms = mm/s)
+dt_val_ms = abs(xb - xa)                                                    # ms
+dy        = abs(yb - ya)                                                    # [aktiv_einheit]
+# v_avg: dy/dt_ms in [einheit/ms] → × 1000 × v_faktor → Anzeigeeinheit
+v_avg     = dy / dt_val_ms * 1000.0 * v_faktor if dt_val_ms > 0 else 0.0
 
-# Momentangeschwindigkeit an XA und XB über ein Zeitbasis-Fenster
+# Momentan-D an XA und XB über ein Zeitbasis-Fenster
 halbes_zeitfenster = max(1, int(v_time_base_ms / 1000.0 * sample_rate / 2))
 
 def v_at_cursor(idx: int) -> float:
-    """Mittlere Momentangeschwindigkeit um idx herum (mm/s)."""
+    """Mittlere D um idx herum (in Anzeigeeinheit)."""
     i0 = max(0, idx - halbes_zeitfenster)
     i1 = min(max_idx, idx + halbes_zeitfenster)
     if i1 <= i0:
         return float('nan')
-    dy   = float(df.loc[i1, active_sensor] - df.loc[i0, active_sensor])
+    _dy  = float(df.loc[i1, active_sensor] - df.loc[i0, active_sensor])
     dt_s = (i1 - i0) / sample_rate
-    return (dy / 1000.0) / dt_s   # µm → mm, s → mm/s
+    return (_dy * v_faktor) / dt_s
 
 v_at_xa        = v_at_cursor(idx_a)
 v_at_xb        = v_at_cursor(idx_b)
@@ -1106,15 +1382,14 @@ if idx_end > idx_start:
     # v-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte
     gefilt_geschw_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
     if gefilt_geschw_roh_full is not None:
-        abs_geschw_full = np.abs(gefilt_geschw_roh_full / 1000.0)   # µm/s → mm/s
+        abs_geschw_full = np.abs(gefilt_geschw_roh_full * v_faktor)
         # Peak nur im Cursor-Bereich suchen
         abs_geschw_slice  = abs_geschw_full[idx_start:idx_end + 1]
         idx_vmax_peak_loc = int(np.argmax(abs_geschw_slice))
         idx_vmax_peak     = idx_start + idx_vmax_peak_loc
         iv_start          = max(0, idx_vmax_peak - halbes_zeitfenster)
         iv_ende           = min(max_idx, idx_vmax_peak + halbes_zeitfenster)
-        v_max             = min(float(np.mean(abs_geschw_full[iv_start:iv_ende + 1])),
-                                float(st.session_state.v_axis_limit))
+        v_max             = float(np.mean(abs_geschw_full[iv_start:iv_ende + 1]))
 
         if 0 <= iv_start <= max_idx and 0 <= iv_ende <= max_idx:
             t_vmax_start = df.loc[iv_start, 'Zeit (ms)']
@@ -1126,7 +1401,7 @@ if idx_end > idx_start:
     # a-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte an Cursor-Grenzen
     gefilt_beschl_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
     if gefilt_beschl_roh_full is not None:
-        gefilt_beschl_full = gefilt_beschl_roh_full / 1_000_000.0   # µm/s² → m/s²
+        gefilt_beschl_full = gefilt_beschl_roh_full * a_faktor
 
         def _peak_marker(idx_abs):
             """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak (absoluter Index)."""
@@ -1138,27 +1413,24 @@ if idx_end > idx_start:
         # Peak nur im Cursor-Bereich suchen
         beschl_slice = gefilt_beschl_full[idx_start:idx_end + 1]
 
-        a_lim = float(st.session_state.a_axis_limit)
-
         idx_falling_abs                                = idx_start + int(np.argmax(beschl_slice))
         a_max_falling, t_amax_falling, y_amax_falling = _peak_marker(idx_falling_abs)
-        a_max_falling = min(a_max_falling,  a_lim)
         has_amax_falling = True
 
         idx_rising_abs                               = idx_start + int(np.argmin(beschl_slice))
         a_min_rising, t_amax_rising, y_amax_rising   = _peak_marker(idx_rising_abs)
-        a_min_rising = max(a_min_rising, -a_lim)
         has_amax_rising = True
 
 # SOP – steht nach halbes_zeitfenster-Definition und nach rect_fit
 if show_sop and rect_fit is not None:
     sop_linien, v_sop = _finde_sop_kreuzungen(
-        df_full['Zeit (ms)'].values,
-        df_full[active_sensor].values,
+        df_use['Zeit (ms)'].values,
+        df_use[active_sensor].values,
         rect_fit,
         st.session_state.sop_percent,
         sample_rate,
         halbes_zeitfenster,
+        v_faktor=v_faktor,
     )
 
 # ---------------------------------------------------------------------------
@@ -1176,19 +1448,40 @@ else:
 # ---------------------------------------------------------------------------
 
 velocity, acceleration = _berechne_ableitungen_fuer_diagramm(
-    df_plot, active_sensor, show_velocity, show_acceleration
+    df_plot, active_sensor, show_velocity, show_acceleration,
+    v_faktor=v_faktor, a_faktor=a_faktor,
 )
 
 # ---------------------------------------------------------------------------
 # DIAGRAMM AUFBAUEN
 # ---------------------------------------------------------------------------
 
+# Y-Achse: 15 % Puffer – nur sichtbare Kanäle der primären Einheit berücksichtigen
+_prim_einheit = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen)), 'µm')
+_prim_namen   = [n for n in sichtbare_sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_einheit] or sichtbare_sensor_namen
+y_max_plot   = float(df_plot[_prim_namen].max().max())
+y_min_plot   = float(df_plot[_prim_namen].min().min())
+y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
+
+velocity_ok     = velocity is not None
+acceleration_ok = acceleration is not None
+_kanal_farbe_map = {name: KANAL_FARBEN[sensor_namen.index(name)] for name in sichtbare_sensor_namen}
+einheit_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
+    sichtbare_sensor_namen, kanal_einheit_map, y_range_plot,
+    show_velocity, velocity_ok, show_acceleration, acceleration_ok,
+    v_einheit=v_einheit, a_einheit=a_einheit,
+    kanal_farbe_map=_kanal_farbe_map,
+)
+active_yaxis = einheit_zu_yaxis.get(kanal_einheit_map.get(active_sensor, 'µm'), 'y')
+
 fig = go.Figure()
 
-for i, name in enumerate(sensor_namen):
+for name in sichtbare_sensor_namen:
+    _ci = sensor_namen.index(name)
     fig.add_trace(go.Scatter(
         x=df_plot['Zeit (ms)'], y=df_plot[name],
-        name=name, line=dict(color=KANAL_FARBEN[i]),
+        name=name, line=dict(color=KANAL_FARBEN[_ci]),
+        yaxis=einheit_zu_yaxis.get(kanal_einheit_map.get(name, 'µm'), 'y'),
     ))
 
 fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
@@ -1197,32 +1490,37 @@ fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
 if show_v_avg:
     fig.add_trace(go.Scatter(
         x=[xa, xb], y=[ya, yb],
-        mode='lines+markers', name='v-Schnitt',
+        mode='lines+markers', name='Schnittlinie',
         line=dict(color=FARBE_V_SCHNITT, width=2, dash='dot'),
+        yaxis=active_yaxis,
     ))
 
 if rect_fit is not None:
-    _zeichne_rechteck_fit(fig, rect_fit, min_zeit, max_zeit, mit_fuellung=show_rect_fit)
+    _zeichne_rechteck_fit(fig, rect_fit, min_zeit, max_zeit,
+                          mit_fuellung=show_rect_fit, yaxis=active_yaxis)
 
 if has_vmax:
     fig.add_trace(go.Scatter(
         x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
-        mode='lines+markers', name='v-max',
+        mode='lines+markers', name='D-max',
         line=dict(color=FARBE_VMAX, width=2),
+        yaxis=active_yaxis,
     ))
 if has_amax_falling:
     fig.add_trace(go.Scatter(
         x=[t_amax_falling], y=[y_amax_falling],
-        mode='markers', name='a-max',
+        mode='markers', name='D2-max',
         marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
                     line=dict(color=FARBE_AMAX, width=2)),
+        yaxis=active_yaxis,
     ))
 if has_amax_rising:
     fig.add_trace(go.Scatter(
         x=[t_amax_rising], y=[y_amax_rising],
-        mode='markers', name='a-min',
+        mode='markers', name='D2-min',
         marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
                     line=dict(color=FARBE_AMAX, width=2)),
+        yaxis=active_yaxis,
     ))
 if sop_linien:
     erste_sichtbar = True
@@ -1234,58 +1532,37 @@ if sop_linien:
             mode='lines',
             name='SOP' if erste_sichtbar else None,
             showlegend=erste_sichtbar,
-            line=dict(color=FARBE_GESCHW, width=2),
+            line=dict(color=FARBE_D, width=2),
+            yaxis=active_yaxis,
         ))
         fig.add_trace(go.Scatter(
             x=[t_sop], y=[y_lvl],
             mode='markers', showlegend=False,
-            marker=dict(color=FARBE_GESCHW, size=14, symbol='x',
-                        line=dict(color=FARBE_GESCHW, width=2)),
+            marker=dict(color=FARBE_D, size=14, symbol='x',
+                        line=dict(color=FARBE_D, width=2)),
+            yaxis=active_yaxis,
         ))
         erste_sichtbar = False
 if show_velocity and velocity is not None:
     fig.add_trace(go.Scatter(
         x=df_plot['Zeit (ms)'], y=velocity,
-        name='Geschwindigkeit', yaxis='y2', line=dict(color=FARBE_GESCHW),
+        name='D', yaxis=v_yaxis, line=dict(color=FARBE_D),
     ))
 if show_acceleration and acceleration is not None:
     fig.add_trace(go.Scatter(
         x=df_plot['Zeit (ms)'], y=acceleration,
-        name='Beschleunigung', yaxis='y3', line=dict(color=FARBE_BESCHL),
+        name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
     ))
-
-# Y-Achse: 15 % Puffer über Signalbereich damit Legende den Graph nicht verdeckt
-y_max_plot   = float(df_plot[sensor_namen].max().max())
-y_min_plot   = float(df_plot[sensor_namen].min().min())
-y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
 
 fig.update_layout(
     xaxis_title="Zeit (ms)",
-    yaxis_title=f"Messgröße ({y_einheit})",
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
     uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}",
-    xaxis=dict(autorange=True, rangemode='nonnegative'),
-    yaxis=dict(range=y_range_plot),
+    xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end]),
+    **layout_yachsen,
 )
-if show_velocity and velocity is not None:
-    fig.update_layout(
-        yaxis2=dict(
-            title='Geschwindigkeit (mm/s)',
-            overlaying='y', side='right', showgrid=False,
-            range=[-st.session_state.v_axis_limit, st.session_state.v_axis_limit],
-        )
-    )
-if show_acceleration and acceleration is not None:
-    fig.update_layout(
-        yaxis3=dict(
-            title='Beschleunigung (m/s²)',
-            overlaying='y', side='right', showgrid=False,
-            position=0.85 if show_velocity else 1.0,
-            range=[-st.session_state.a_axis_limit, st.session_state.a_axis_limit],
-        )
-    )
 st.plotly_chart(fig, width="stretch", key="main_chart")
 
 # ---------------------------------------------------------------------------
@@ -1345,26 +1622,26 @@ if crop_active:
 # ---------------------------------------------------------------------------
 
 freq_hz = (1000.0 / dt_val_ms) if dt_val_ms > 0 else float('nan')
-hub_um  = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
+hub     = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
 
-# Zeile 1 – Zeit & Weg
+# Zeile 1 – Zeit & Signal
 z1, z2, z3, z4 = st.columns(4)
 z1.metric("Δt (A-B)",          f"{dt_val_ms:.3f} ms")
 z2.metric("Frequenz Δt (A-B)", f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A")
-z3.metric("Δs (A-B)",          f"{dy_um:.1f} µm")
-z4.metric("Hub Best-fit",      f"{hub_um:.1f} µm"           if not np.isnan(hub_um) else "N/A")
+z3.metric("Δs (A-B)",          f"{dy:.1f} {_aktiv_einheit}")
+z4.metric("Hub Best-fit",      f"{hub:.1f} {_aktiv_einheit}" if not np.isnan(hub) else "N/A")
 
-# Zeile 2 – Geschwindigkeit (alle mm/s)
+# Zeile 2 – D (1. Ableitung)
 g1, g2, g3, g4 = st.columns(4)
-g1.metric("v-mid (A-B)",       f"{v_avg:.1f} mm/s")
-g2.metric("Δv Cursor (A-B)",   f"{v_cursor_delta:.1f} mm/s" if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric("v-max (Peak)",      f"{v_max:.1f} mm/s"          if not np.isnan(v_max) else "N/A")
-g4.metric("SOP",               f"{v_sop:.1f} mm/s"          if not np.isnan(v_sop) else "N/A")
+g1.metric("D (A-B)",           f"{v_avg:.1f} {v_einheit}")
+g2.metric("ΔD (A-B)",          f"{v_cursor_delta:.1f} {v_einheit}" if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric("D max (Peak)",      f"{v_max:.1f} {v_einheit}"          if not np.isnan(v_max) else "N/A")
+g4.metric("SOP",               f"{v_sop:.1f} {v_einheit}"          if not np.isnan(v_sop) else "N/A")
 
-# Zeile 3 – Beschleunigung (beide m/s²)
+# Zeile 3 – D2 (2. Ableitung)
 a1, a2 = st.columns(2)
-a1.metric("a-max Falling",     f"{a_max_falling:.0f} m/s²"  if not np.isnan(a_max_falling) else "N/A")
-a2.metric("a-min Rising",      f"{a_min_rising:.0f} m/s²"   if not np.isnan(a_min_rising) else "N/A")
+a1.metric("D2 max Fall.",      f"{a_max_falling:.1f} {a_einheit}"  if not np.isnan(a_max_falling) else "N/A")
+a2.metric("D2 min Rise.",      f"{a_min_rising:.1f} {a_einheit}"   if not np.isnan(a_min_rising) else "N/A")
 
 # ---------------------------------------------------------------------------
 # EXPORT
@@ -1372,21 +1649,21 @@ a2.metric("a-min Rising",      f"{a_min_rising:.0f} m/s²"   if not np.isnan(a_m
 
 st.sidebar.header("3. Export")
 metrics = {
-    # Zeit & Weg
+    # Zeit & Signal
     "XA (ms)":              f"{xa:.3f}",
     "XB (ms)":              f"{xb:.3f}",
     "Δt (A-B)":             f"{dt_val_ms:.3f} ms",
-    "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"           if not np.isnan(freq_hz) else "N/A",
-    "Δs (A-B)":             f"{dy_um:.1f} µm",
-    "Hub Best-fit":         f"{hub_um:.1f} µm"            if not np.isnan(hub_um) else "N/A",
-    # Geschwindigkeit
-    "v-mid (A-B)":          f"{v_avg:.1f} mm/s",
-    "Δv Cursor (A-B)":      f"{v_cursor_delta:.1f} mm/s"  if not np.isnan(v_cursor_delta) else "N/A",
-    "v-max (Peak)":         f"{v_max:.1f} mm/s"           if not np.isnan(v_max) else "N/A",
-    "SOP":                  f"{v_sop:.1f} mm/s"           if not np.isnan(v_sop) else "N/A",
-    # Beschleunigung
-    "a-max Falling":        f"{a_max_falling:.0f} m/s²"   if not np.isnan(a_max_falling) else "N/A",
-    "a-min Rising":         f"{a_min_rising:.0f} m/s²"    if not np.isnan(a_min_rising) else "N/A",
+    "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"                        if not np.isnan(freq_hz) else "N/A",
+    "Δs (A-B)":             f"{dy:.1f} {_aktiv_einheit}",
+    "Hub Best-fit":         f"{hub:.1f} {_aktiv_einheit}"              if not np.isnan(hub) else "N/A",
+    # D (1. Ableitung)
+    "D (A-B)":              f"{v_avg:.1f} {v_einheit}",
+    f"ΔD (A-B)":            f"{v_cursor_delta:.1f} {v_einheit}"        if not np.isnan(v_cursor_delta) else "N/A",
+    "D max (Peak)":         f"{v_max:.1f} {v_einheit}"                 if not np.isnan(v_max) else "N/A",
+    "SOP":                  f"{v_sop:.1f} {v_einheit}"                 if not np.isnan(v_sop) else "N/A",
+    # D2 (2. Ableitung)
+    "D2 max Fall.":         f"{a_max_falling:.1f} {a_einheit}"         if not np.isnan(a_max_falling) else "N/A",
+    "D2 min Rise.":         f"{a_min_rising:.1f} {a_einheit}"          if not np.isnan(a_min_rising) else "N/A",
 }
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
@@ -1397,7 +1674,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
     with st.spinner("Wird erstellt..."):
         try:
             chart_png = build_chart_png(
-                df, sensor_namen, active_sensor,
+                df, sichtbare_sensor_namen, active_sensor,
                 xa, xb, ya, yb, show_v_avg,
                 t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
                 t_amax_falling, y_amax_falling, has_amax_falling,
@@ -1409,7 +1686,8 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 show_acceleration=show_acceleration,
                 window_length_accel=st.session_state.window_length_accel,
                 sop_linien=sop_linien,
-                y_einheit=y_einheit,
+                kanal_einheit_map=kanal_einheit_map,
+                alle_sensor_namen=sensor_namen,
             )
             stem = uploaded_file.name.rsplit('.', 1)[0]
             if export_format == "PDF":
