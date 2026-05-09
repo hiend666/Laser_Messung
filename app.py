@@ -13,14 +13,15 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-from scipy.signal import savgol_filter
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 
-VERSION = "v1.00.06"
+import reader
+
+VERSION = "v1.00.07"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -30,7 +31,6 @@ V_ACHSE_LIMIT_MM_S = 3_200    # Feste Y-Grenze Geschwindigkeitsachse  ± mm/s
 A_ACHSE_LIMIT_M_S2 = 20_000   # Feste Y-Grenze Beschleunigungsachse   ± m/s²
 
 MAX_PLOT_PUNKTE    = 5_000     # Downsampling-Schwelle für interaktives Diagramm
-SAVGOL_POLYNOM     = 3         # Polynomgrad für alle Savitzky-Golay-Filter
 
 # Diagramm-Farben – Kanäle
 FARBE_KANAL1    = '#003366'
@@ -117,6 +117,11 @@ defaults = {
     'sub_offsets':    False,
     'sub_grenzwerte': False,
     'einstellungen':  True,
+    # Oszilloskop-spezifisch: Y-Skalierungsfaktor pro Kanal
+    'osc_skale_1': 1.0,
+    'osc_skale_2': 1.0,
+    'osc_skale_3': 1.0,
+    'osc_skale_4': 1.0,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -124,187 +129,20 @@ for key, val in defaults.items():
 
 
 # ---------------------------------------------------------------------------
-# HILFSFUNKTIONEN – SAVITZKY-GOLAY
-# ---------------------------------------------------------------------------
-
-def _clamp_savgol_fenster(fenster: int, n: int) -> int:
-    """Klemmt Fenstergröße auf gültigen Wert für savgol_filter (ungerade, ≥ 5, < n)."""
-    if fenster >= n:
-        fenster = n if n % 2 == 1 else n - 1
-    if fenster % 2 == 0:
-        fenster -= 1
-    return fenster
-
-
-def _berechne_sg_ableitung(
-    signal: np.ndarray, dt_s: float, fenster: int, ordnung: int
-) -> np.ndarray | None:
-    """Savitzky-Golay-Ableitung beliebiger Ordnung. Gibt None zurück wenn Signal zu kurz.
-
-    ordnung 1 → Geschwindigkeit (signal_einheit / s)
-    ordnung 2 → Beschleunigung  (signal_einheit / s²)
-    """
-    fenster = _clamp_savgol_fenster(fenster, len(signal))
-    if fenster < 5:
-        return None
-    return savgol_filter(signal, fenster, SAVGOL_POLYNOM, deriv=ordnung, delta=dt_s, mode='mirror')
-
-
-# ---------------------------------------------------------------------------
-# GECACHTE DATENFUNKTIONEN
+# GECACHTE DATENFUNKTIONEN  (Wrapper um reader.py – Streamlit-Caching hier)
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-def load_data(
+def load_rohdaten(
     file_bytes: bytes,
+    file_type: str,
     skip_rows: int,
     max_samples: int,
     kanal_namen: tuple[str, ...],
-    file_type: str,
+    kanal_skalierung: tuple[float, ...] = (),
 ) -> pd.DataFrame:
-    """Liest Daten im CSV- oder TXT-Format und gibt DataFrame mit den konfigurierten Kanälen zurück.
-
-    Leere Spalten (NaN in der ersten Datenzeile) werden vor der Kanalzuweisung herausgefiltert.
-    kanal_namen bestimmt, wie viele Spalten eingelesen werden und wie sie heißen.
-    """
-    n_kanäle = len(kanal_namen)
-    nrows    = max_samples if max_samples > 0 else None
-
-    if file_type == "Hubmessung":
-        # TXT-Datei für Hubmessung: TAB-getrennt, Header-Blöcke überspringen
-        content = file_bytes.decode('utf-8', errors='ignore')
-
-        # Finde den Beginn der Daten nach "####Test Data####"
-        # splitlines() verarbeitet \n, \r\n und \r korrekt
-        lines = content.splitlines()
-        data_start_idx = -1
-        for i, line in enumerate(lines):
-            if "####Test Data####" in line:
-                # Daten beginnen zwei Zeilen später (nach "Stroke Data" und Header)
-                data_start_idx = i + 2
-                break
-
-        if data_start_idx == -1:
-            raise ValueError("TXT-Datei enthält keinen gültigen '####Test Data####' Block.")
-
-        # Daten ab data_start_idx einlesen, Footer ab "####JSON Data####" ignorieren
-        filtered_lines = []
-        for line in lines[data_start_idx:]:
-            if "####JSON Data####" in line:
-                break
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split('\t')
-            try:
-                float(parts[0])  # Erste Spalte sollte Zeit sein
-                filtered_lines.append(line)
-            except (ValueError, IndexError):
-                continue
-            if nrows is not None and len(filtered_lines) >= nrows:
-                break
-
-        if not filtered_lines:
-            raise ValueError("Keine gültigen numerischen Daten in der TXT-Datei gefunden.")
-
-        # Als CSV-String behandeln
-        data_content = '\n'.join(filtered_lines)
-        df = pd.read_csv(
-            io.StringIO(data_content), sep='\t', decimal='.', header=None
-        )
-
-        # Spalten herausfiltern, die in der ersten Datenzeile leer sind
-        erste_zeile = df.iloc[0]
-        df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
-
-        # Erste Spalte ist Zeit in ms, restliche sind Sensordaten
-        time_col = df.columns[0]
-        sensor_cols = df.columns[1:]
-
-        if len(sensor_cols) < n_kanäle:
-            raise ValueError(
-                f"TXT-Datei enthält nur {len(sensor_cols)} Sensordaten-Spalten, "
-                f"aber {n_kanäle} Kanäle sind konfiguriert."
-            )
-
-        # DataFrame mit Zeit und Sensordaten erstellen
-        result_df = pd.DataFrame()
-        result_df['Zeit (ms)'] = df[time_col]
-        for i, kanal_name in enumerate(kanal_namen):
-            result_df[kanal_name] = df[sensor_cols[i]]
-
-        return result_df
-
-    else:
-        # CSV plain Format
-        probe      = pd.read_csv(
-            io.BytesIO(file_bytes), sep=',', decimal='.', header=None, skiprows=skip_rows, nrows=1
-        )
-        first_cell = str(probe.iloc[0, 0]).strip()
-
-        try:
-            float(first_cell)
-            # Roh-Format: keine Spaltenköpfe, erste Zelle ist bereits numerisch
-            df = pd.read_csv(
-                io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
-                skiprows=skip_rows, nrows=nrows
-            )
-            df = df.dropna(axis=1, how='all')
-            # Spalten herausfiltern, die in der ersten Datenzeile leer sind
-            erste_zeile = df.iloc[0]
-            df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
-            data_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-            if len(data_cols) < n_kanäle:
-                raise ValueError(
-                    f"CSV enthält nur {len(data_cols)} befüllte numerische Spalten, "
-                    f"aber {n_kanäle} Kanäle sind konfiguriert."
-                )
-            # DataFrame mit berechneten Zeitstempeln und Sensordaten erstellen
-            result_df = pd.DataFrame()
-            result_df['Zeit (ms)'] = build_time_axis(len(df), sample_rate)
-            for i, kanal_name in enumerate(kanal_namen):
-                result_df[kanal_name] = df[data_cols[i]]
-
-        except ValueError as exc:
-            # Sauber-Format: erste Zeile ist Spaltenheader
-            df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', nrows=nrows)
-            df = df.dropna(axis=1, how='all')
-            # Spalten herausfiltern, die in der ersten Datenzeile leer sind
-            erste_zeile = df.iloc[0]
-            df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
-            sensor_cols = [c for c in df.columns if c != 'Zeit (s)']
-            if len(sensor_cols) < n_kanäle:
-                raise ValueError(
-                    f"CSV enthält nur {len(sensor_cols)} befüllte Messspalten, "
-                    f"aber {n_kanäle} Kanäle sind konfiguriert."
-                ) from exc
-            # DataFrame mit Zeit und Sensordaten erstellen
-            result_df = pd.DataFrame()
-            result_df['Zeit (ms)'] = build_time_axis(len(df), sample_rate)
-            for i, kanal_name in enumerate(kanal_namen):
-                result_df[kanal_name] = df[sensor_cols[i]]
-
-        return result_df
-
-
-@st.cache_data
-def build_time_axis(n_samples: int, sr: float) -> np.ndarray:
-    """Erzeugt Zeitvektor in ms für n_samples bei Samplerate sr (Hz)."""
-    return np.arange(n_samples) * (1000.0 / sr)
-
-
-@st.cache_data
-def apply_offsets(
-    kanal_namen: tuple[str, ...],
-    kanal_arrays: tuple,        # tuple of np.ndarray, je Kanal ein Array
-    offsets: tuple[float, ...],
-    zeit: np.ndarray,
-) -> pd.DataFrame:
-    """Erzeugt den verarbeiteten DataFrame – nur bei echten Änderungen neu berechnet."""
-    data: dict = {'Zeit (ms)': zeit}
-    for name, arr, off in zip(kanal_namen, kanal_arrays, offsets):
-        data[name] = arr + off
-    return pd.DataFrame(data)
+    """Gecachter Wrapper um reader.load_raw – wird nur bei Dateiänderung neu ausgeführt."""
+    return reader.load_raw(file_bytes, file_type, skip_rows, max_samples, kanal_namen, kanal_skalierung)
 
 
 @st.cache_data
@@ -428,8 +266,8 @@ def on_file_upload():
 
 def update_sample_rate_for_file_type():
     """Setzt die Samplerate automatisch basierend auf dem Dateityp."""
-    if st.session_state.get('file_type_radio', 'CSV plain') == "Hubmessung":
-        # Hubmessungen haben feste Samplerate von 2.55 µs
+    ft = st.session_state.get('file_type_radio', 'CSV plain')
+    if ft == "Hubmessung":
         st.session_state.sample_rate = 2.55
         st.session_state.sample_rate_unit = "µs"
         st.session_state.sample_rate_unit_toggle = True
@@ -437,9 +275,14 @@ def update_sample_rate_for_file_type():
         st.session_state.ch2_name = ''
         st.session_state.ch3_name = ''
         st.session_state.ch4_name = ''
-    elif st.session_state.get('file_type_radio', 'CSV plain') == "CSV plain":
+    elif ft == "CSV plain":
         st.session_state.ch1_name = 'Festo'
         st.session_state.ch2_name = 'DST'
+        st.session_state.ch3_name = ''
+        st.session_state.ch4_name = ''
+    elif ft == "Oszilloskop CSV":
+        st.session_state.ch1_name = 'Kanal 1'
+        st.session_state.ch2_name = 'Kanal 2'
         st.session_state.ch3_name = ''
         st.session_state.ch4_name = ''
 
@@ -471,12 +314,12 @@ def _berechne_ableitungen_fuer_diagramm(
 
     velocity = None
     if show_velocity:
-        roh = _berechne_sg_ableitung(arr, dt_s, st.session_state.window_length, 1)
+        roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length, 1)
         velocity = roh / 1000.0 if roh is not None else None          # µm/s → mm/s
 
     acceleration = None
     if show_acceleration:
-        roh = _berechne_sg_ableitung(arr, dt_s, st.session_state.window_length_accel, 2)
+        roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length_accel, 2)
         acceleration = roh / 1_000_000.0 if roh is not None else None  # µm/s² → m/s²
 
     return velocity, acceleration
@@ -598,6 +441,7 @@ def build_chart_png(
     show_velocity=False, window_length=21,
     show_acceleration=False, window_length_accel=21,
     sop_linien=None,
+    y_einheit: str = "µm",
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
 
@@ -612,10 +456,10 @@ def build_chart_png(
         arr  = df[active_sensor].values
         dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / 1000.0
         if show_velocity:
-            roh = _berechne_sg_ableitung(arr, dt_s, window_length, 1)
+            roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
             velocity = roh / 1000.0 if roh is not None else None
         if show_acceleration:
-            roh = _berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
+            roh = reader.berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
             acceleration = roh / 1_000_000.0 if roh is not None else None
 
     export_fig = go.Figure()
@@ -697,7 +541,7 @@ def build_chart_png(
 
     export_fig.update_layout(
         xaxis_title="Zeit (ms)",
-        yaxis_title="Weg (µm)",
+        yaxis_title=f"Messgröße ({y_einheit})",
         height=500,
         hovermode="x unified",
         legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
@@ -824,13 +668,16 @@ st.sidebar.header("1. Import")
 st.sidebar.caption(f"Version: {VERSION}")
 
 file_type = st.session_state.get('file_type_radio', 'CSV plain')
-file_extensions = ["csv"] if file_type == "CSV plain" else ["txt"]
+if file_type == "Hubmessung":
+    file_extensions = ["txt"]
+else:
+    file_extensions = ["csv"]
 
 uploaded_file = st.sidebar.file_uploader(
     "upload", type=file_extensions, label_visibility="collapsed",
     key="_file_uploader",
     on_change=on_file_upload,
-    help="Datei hochladen. CSV plain: Komma-getrennt. Hubmessung: TAB-getrennt mit fester Samplerate.",
+    help="Datei hochladen. CSV plain / Oszilloskop CSV: .csv-Datei. Hubmessung: .txt-Datei.",
 )
 
 # Beim manuellen Einklappen des Gesamt-Expanders auch alle Unter-Expander einklappen
@@ -846,48 +693,69 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
     with st.expander("Dateityp", expanded=st.session_state.sub_dateityp, key="sub_dateityp"):
         st.radio(
             "Dateityp",
-            ["CSV plain", "Hubmessung"],
+            ["CSV plain", "Hubmessung", "Oszilloskop CSV"],
             key="file_type_radio",
-            help="CSV plain: Standard-CSV mit Komma-Trennung. Hubmessung: TXT-Datei mit TAB-Trennung und fester Samplerate.",
+            help="CSV plain: Komma-getrennt ohne Zeitachse. Hubmessung: TAB-getrennt mit Zeitachse. Oszilloskop CSV: Komma-getrennt mit Zeitachse in Sekunden.",
             on_change=update_sample_rate_for_file_type,
         )
 
     with st.expander("Einlesen", expanded=st.session_state.sub_einlesen, key="sub_einlesen"):
-        sample_rate_unit  = st.session_state.sample_rate_unit
-        sample_rate_input = st.number_input(
-            "Abtastung",
-            min_value=0.0001,
-            format="%.3f" if sample_rate_unit == "µs" else "%.1f",
-            key="sample_rate",
-            help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
-        )
-        use_us = st.toggle(
-            "Hz / µs",
-            key="sample_rate_unit_toggle",
-            on_change=update_sample_rate_unit,
-            label_visibility="visible",
-            help="Eingabeeinheit umschalten: µs = Zeitabstand pro Sample, Hz = Abtastfrequenz.",
-        )
-        sample_rate_unit = "µs" if use_us else "Hz"
-        if st.session_state.sample_rate_unit != sample_rate_unit:
-            st.session_state.sample_rate_unit = sample_rate_unit
-        sample_rate = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
+        if file_type == "Oszilloskop CSV":
+            st.caption("Zeitachse wird aus der Datei gelesen.")
+            # Platzhalter-Wert damit sample_rate weiter unten verfügbar ist
+            sample_rate_input = st.session_state.sample_rate
+            sample_rate_unit  = st.session_state.sample_rate_unit
+            sample_rate       = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
+        else:
+            sample_rate_unit  = st.session_state.sample_rate_unit
+            sample_rate_input = st.number_input(
+                "Abtastung",
+                min_value=0.0001,
+                format="%.3f" if sample_rate_unit == "µs" else "%.1f",
+                key="sample_rate",
+                help="Hz = Abtastfrequenz, µs = Zeit pro Sample",
+            )
+            use_us = st.toggle(
+                "Hz / µs",
+                key="sample_rate_unit_toggle",
+                on_change=update_sample_rate_unit,
+                label_visibility="visible",
+                help="Eingabeeinheit umschalten: µs = Zeitabstand pro Sample, Hz = Abtastfrequenz.",
+            )
+            sample_rate_unit = "µs" if use_us else "Hz"
+            if st.session_state.sample_rate_unit != sample_rate_unit:
+                st.session_state.sample_rate_unit = sample_rate_unit
+            sample_rate = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
 
-        st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
-                        help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
+        if file_type == "CSV plain":
+            st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
+                            help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
     with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele"):
         st.caption("Leeres Feld = Kanal nicht einlesen")
-        st.text_input("Kanal 1 Name", key="ch1_name",
-                      help="Leer lassen um Kanal 1 nicht einzulesen.")
-        st.text_input("Kanal 2 Name", key="ch2_name",
-                      help="Leer lassen um Kanal 2 nicht einzulesen.")
-        st.text_input("Kanal 3 Name", key="ch3_name",
-                      help="Leer lassen um Kanal 3 nicht einzulesen.")
-        st.text_input("Kanal 4 Name", key="ch4_name",
-                      help="Leer lassen um Kanal 4 nicht einzulesen.")
+        # Für Oszilloskop: Einheiten aus Datei-Header vorlesen
+        _osc_einheiten: list[str] = []
+        if file_type == "Oszilloskop CSV" and uploaded_file:
+            _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
+        for _ki, (_ch_key, _skale_key) in enumerate(
+            [('ch1_name', 'osc_skale_1'), ('ch2_name', 'osc_skale_2'),
+             ('ch3_name', 'osc_skale_3'), ('ch4_name', 'osc_skale_4')]
+        ):
+            _einheit_hint = f" [{_osc_einheiten[_ki]}]" if _ki < len(_osc_einheiten) else ""
+            st.text_input(
+                f"Kanal {_ki+1} Name{_einheit_hint}", key=_ch_key,
+                help="Leer lassen um diesen Kanal nicht einzulesen.",
+            )
+            if file_type == "Oszilloskop CSV":
+                st.number_input(
+                    f"Kanal {_ki+1} Skalierung",
+                    value=st.session_state[_skale_key],
+                    step=0.001, format="%.4f",
+                    key=_skale_key,
+                    help="Y-Achsen-Skalierungsfaktor (Rohwert × Faktor). Standard: 1.0",
+                )
 
     if uploaded_file:
         _kanal_cfg = [
@@ -904,18 +772,24 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
         sensor_namen = list(kanal_namen_tuple)
         file_bytes = uploaded_file.getvalue()
+        _osc_skale_tuple = tuple(
+            st.session_state[f'osc_skale_{i+1}'] for i in range(len(kanal_namen_tuple))
+        )
 
         try:
-            df_raw = load_data(
-                file_bytes, st.session_state.skip_rows,
-                st.session_state.max_samples, kanal_namen_tuple, file_type,
+            df_raw = load_rohdaten(
+                file_bytes, file_type, st.session_state.skip_rows,
+                st.session_state.max_samples, kanal_namen_tuple, _osc_skale_tuple,
             )
         except ValueError as e:
             st.error(f"Fehler beim Laden: {e}")
             st.stop()
 
         if st.session_state.last_file_name != uploaded_file.name:
-            total_time_ms = len(df_raw) / sample_rate * 1000.0
+            if file_type in ("Hubmessung", "Oszilloskop CSV"):
+                total_time_ms = float(df_raw['Zeit (ms)'].iloc[-1])
+            else:
+                total_time_ms = len(df_raw) / sample_rate * 1000.0
             for i, name in enumerate(sensor_namen, 1):
                 off_init = float(df_raw[name].min()) * -1.0
                 st.session_state[f'off{i}']        = off_init
@@ -1006,11 +880,14 @@ if len(kanal_namen_tuple) < 1:
 # ---------------------------------------------------------------------------
 
 file_bytes = uploaded_file.getvalue()
+osc_skale_tuple = tuple(
+    st.session_state[f'osc_skale_{i+1}'] for i in range(len(kanal_namen_tuple))
+)
 
 try:
-    df_raw = load_data(
-        file_bytes, st.session_state.skip_rows,
-        st.session_state.max_samples, kanal_namen_tuple, file_type,
+    df_raw = load_rohdaten(
+        file_bytes, file_type, st.session_state.skip_rows,
+        st.session_state.max_samples, kanal_namen_tuple, osc_skale_tuple,
     )
 except ValueError as e:
     st.error(f"Fehler beim Laden: {e}")
@@ -1019,16 +896,33 @@ except ValueError as e:
 sensor_namen = list(kanal_namen_tuple)   # tatsächlich geladene Kanalnamen
 
 # ---------------------------------------------------------------------------
+# DATENAUFBEREITUNG – reader.build_display_df erzeugt df_full + aktuelle Samplerate
+# ---------------------------------------------------------------------------
+
+# Offsets für alle aktiven Kanäle auslesen
+offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
+
+df_full, sample_rate = reader.build_display_df(
+    df_raw, file_type, sample_rate, kanal_namen_tuple, offs
+)
+
+# Y-Achsen-Einheit: für Oszilloskop aus dem Datei-Header, sonst µm
+if file_type == "Oszilloskop CSV":
+    _, _osc_einh_main = reader.peek_oszilloskop_header(file_bytes)
+    y_einheit = _osc_einh_main[0] if _osc_einh_main else "V"
+else:
+    y_einheit = "µm"
+
+# ---------------------------------------------------------------------------
 # AUTO-RESET BEI NEUER DATEI
 # ---------------------------------------------------------------------------
 
 if st.session_state.last_file_name != uploaded_file.name:
-    total_time_ms = len(df_raw) / sample_rate * 1000.0
+    total_time_ms = float(df_full['Zeit (ms)'].iloc[-1])
     for i, name in enumerate(sensor_namen, 1):
         off_init = float(df_raw[name].min()) * -1.0
         st.session_state[f'off{i}']        = off_init
         st.session_state[f'off{i}_slider'] = off_init
-    # Offsets für nicht geladene Kanäle zurücksetzen
     for i in range(len(sensor_namen) + 1, 5):
         st.session_state[f'off{i}']        = 0.0
         st.session_state[f'off{i}_slider'] = 0.0
@@ -1040,25 +934,8 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.last_file_name = uploaded_file.name
     st.rerun()
 
-# Offsets für alle aktiven Kanäle auslesen
-offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
-
-# ---------------------------------------------------------------------------
-# DATENVERARBEITUNG
-# ---------------------------------------------------------------------------
-
-if file_type == "Hubmessung":
-    # Für Hubmessungen: Zeit aus der Datei verwenden
-    zeit_full = df_raw['Zeit (ms)'].values
-else:
-    # Für CSV: Zeitachse berechnen
-    zeit_full = build_time_axis(len(df_raw), sample_rate)   # ms
-
-max_zeit_full = float(zeit_full[-1])
-max_idx_full  = len(df_raw) - 1
-
-kanal_arrays = tuple(df_raw[name].values for name in sensor_namen)
-df_full = apply_offsets(kanal_namen_tuple, kanal_arrays, offs, zeit_full)
+max_zeit_full = float(df_full['Zeit (ms)'].iloc[-1])
+max_idx_full  = len(df_full) - 1
 
 # ---------------------------------------------------------------------------
 # CROP-LOGIK
@@ -1227,7 +1104,7 @@ if idx_end > idx_start:
     dt_step_s = 1.0 / sample_rate
 
     # v-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte
-    gefilt_geschw_roh_full = _berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
+    gefilt_geschw_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
     if gefilt_geschw_roh_full is not None:
         abs_geschw_full = np.abs(gefilt_geschw_roh_full / 1000.0)   # µm/s → mm/s
         # Peak nur im Cursor-Bereich suchen
@@ -1247,7 +1124,7 @@ if idx_end > idx_start:
             has_vmax     = True
 
     # a-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte an Cursor-Grenzen
-    gefilt_beschl_roh_full = _berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+    gefilt_beschl_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
     if gefilt_beschl_roh_full is not None:
         gefilt_beschl_full = gefilt_beschl_roh_full / 1_000_000.0   # µm/s² → m/s²
 
@@ -1384,7 +1261,7 @@ y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
 
 fig.update_layout(
     xaxis_title="Zeit (ms)",
-    yaxis_title="Weg (µm)",
+    yaxis_title=f"Messgröße ({y_einheit})",
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
@@ -1532,6 +1409,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 show_acceleration=show_acceleration,
                 window_length_accel=st.session_state.window_length_accel,
                 sop_linien=sop_linien,
+                y_einheit=y_einheit,
             )
             stem = uploaded_file.name.rsplit('.', 1)[0]
             if export_format == "PDF":
