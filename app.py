@@ -142,10 +142,14 @@ for _i in range(1, N_KANÄLE + 1):
     defaults[f'off{_i}_slider'] = 0.0
     defaults[f'x_off{_i}']     = 0.0
     defaults[f'show_ch{_i}']   = True
-# Y-Achsen-Grenzwerte pro Einheit (0 = automatisch)
+# Y-Achsen-Grenzwerte pro Einheit (0 = automatisch) – für Rückwärtskompatibilität
 for _e in EINHEIT_ALLE:
     defaults[einheit_ss_key_min(_e)] = 0.0
     defaults[einheit_ss_key_max(_e)] = 0.0
+# Y-Achsen-Grenzwerte pro Kanal (0 = automatisch)
+for _i in range(1, N_KANÄLE + 1):
+    defaults[f'ch{_i}_ymin'] = 0.0
+    defaults[f'ch{_i}_ymax'] = 0.0
 
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -167,6 +171,7 @@ for _i in range(1, N_KANÄLE + 1):
     EINSTELLUNGEN_KEYS += [
         f'ch{_i}_name', f'ch{_i}_einheit', f'osc_skale_{_i}',
         f'off{_i}', f'off{_i}_slider', f'x_off{_i}', f'show_ch{_i}',
+        f'ch{_i}_ymin', f'ch{_i}_ymax',
     ]
 for _e in EINHEIT_ALLE:
     EINSTELLUNGEN_KEYS.append(einheit_ss_key_min(_e))
@@ -194,6 +199,7 @@ def _yachsen_layout(
     kanal_farbe_map: dict[str, str] | None = None,
     y_ranges_fallback: dict[str, list] | None = None,
     kanal_bereiche: dict[str, tuple[float, float]] | None = None,
+    kanal_ch_num: dict[str, int] | None = None,
 ) -> tuple[dict, dict, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
@@ -211,10 +217,14 @@ def _yachsen_layout(
     - x_domain_end:    rechte Grenze des Plot-Bereichs (0…1)
     """
     STEP = 0.07
+    _ch_num = kanal_ch_num or {}
 
-    def _user_lim(einheit: str) -> tuple[float, float] | None:
-        lo = float(st.session_state.get(einheit_ss_key_min(einheit), 0))
-        hi = float(st.session_state.get(einheit_ss_key_max(einheit), 0))
+    def _user_lim_kanal(name: str) -> tuple[float, float] | None:
+        ch_i = _ch_num.get(name, 0)
+        if ch_i == 0:
+            return None
+        lo = float(st.session_state.get(f'ch{ch_i}_ymin', 0))
+        hi = float(st.session_state.get(f'ch{ch_i}_ymax', 0))
         return (lo, hi) if (lo != 0 or hi != 0) else None
 
     def _kanal_span(name: str) -> float | None:
@@ -243,11 +253,10 @@ def _yachsen_layout(
         return None
 
     def _rng(titel: str, kanäle: list[str]) -> list | None:
-        for e in [e.strip() for e in titel.split(' / ')]:
-            lo = float(st.session_state.get(einheit_ss_key_min(e), 0))
-            hi = float(st.session_state.get(einheit_ss_key_max(e), 0))
-            if lo != 0 or hi != 0:
-                return [lo, hi]
+        for n in kanäle:
+            lim = _user_lim_kanal(n)
+            if lim is not None:
+                return list(lim)
         return _fallback_rng(titel, kanäle)
 
     # --- Schritt 1: Einheiten-basierte Gruppen (Reihenfolge aus kanal_namen) ---
@@ -255,44 +264,54 @@ def _yachsen_layout(
     for n in kanal_namen:
         einheit_gruppen.setdefault(kanal_einheit_map.get(n, 'µm'), []).append(n)
 
-    # --- Schritt 2: Aufteilen wenn Wertebereich > SPLIT_FAKTOR ---
-    final_achsen: list[tuple[str, list[str]]] = []   # (titel, kanal_liste)
+    # --- Schritt 2: Innerhalb jeder Einheitsgruppe nach Grenzwert aufteilen ---
+    # Kanäle mit gleichem Grenzwert → gemeinsame Gruppe
+    # Kanäle ohne Grenzwert → eigene Untergruppe (SPLIT_FAKTOR-Logik)
+    # Kanäle mit unterschiedlichem Grenzwert → je eigene Gruppe
+    pre_achsen: list[tuple[str, list[str]]] = []   # (einheit, kanal_liste)
     for einheit, kanäle in einheit_gruppen.items():
-        if len(kanäle) <= 1 or _user_lim(einheit) is not None:
-            final_achsen.append((einheit, list(kanäle)))
-            continue
-        spans = []
+        lim_gruppen: dict[tuple[float, float], list[str]] = {}
+        kein_lim: list[str] = []
         for n in kanäle:
-            s = _kanal_span(n)
-            if s is not None and s > 0:
-                spans.append(s)
-        if len(spans) >= 2 and max(spans) / min(spans) > SPLIT_FAKTOR:
-            for n in kanäle:
-                final_achsen.append((einheit, [n]))
-        else:
-            final_achsen.append((einheit, list(kanäle)))
+            lim = _user_lim_kanal(n)
+            if lim is not None:
+                lim_gruppen.setdefault(lim, []).append(n)
+            else:
+                kein_lim.append(n)
+        # Jede Grenzgruppe bekommt eine eigene Achse
+        for gruppe in lim_gruppen.values():
+            pre_achsen.append((einheit, gruppe))
+        # Kanäle ohne Grenzen: SPLIT_FAKTOR anwenden
+        if len(kein_lim) == 1:
+            pre_achsen.append((einheit, kein_lim))
+        elif len(kein_lim) > 1:
+            spans = [s for n in kein_lim if (s := _kanal_span(n)) is not None and s > 0]
+            if len(spans) >= 2 and max(spans) / min(spans) > SPLIT_FAKTOR:
+                for n in kein_lim:
+                    pre_achsen.append((einheit, [n]))
+            else:
+                pre_achsen.append((einheit, list(kein_lim)))
 
-    # --- Schritt 3: Achsen mit gleichen manuellen Grenzen zusammenführen ---
-    merged_achsen: list[tuple[str, list[str]]] = []
+    # --- Schritt 3: Einheitenübergreifend zusammenführen wenn Grenzen identisch ---
+    final_achsen: list[tuple[str, list[str]]] = []
     lim_zu_idx: dict[tuple[float, float], int] = {}
 
-    for titel, kanäle in final_achsen:
-        lim = _user_lim(titel.split(' / ')[0].strip())
-        if lim is not None:
-            if lim in lim_zu_idx:
-                idx = lim_zu_idx[lim]
-                ex_titel, ex_kanäle = merged_achsen[idx]
-                ex_einheiten = [e.strip() for e in ex_titel.split(' / ')]
-                if titel not in ex_einheiten:
-                    ex_titel = ex_titel + ' / ' + titel
-                merged_achsen[idx] = (ex_titel, ex_kanäle + kanäle)
-            else:
-                lim_zu_idx[lim] = len(merged_achsen)
-                merged_achsen.append((titel, kanäle))
+    for einheit, kanäle in pre_achsen:
+        # Gruppe ist nur dann zusammenführbar wenn ALLE Kanäle dieselbe Grenze teilen
+        lim_0 = _user_lim_kanal(kanäle[0]) if kanäle else None
+        lim = lim_0 if (lim_0 is not None
+                        and all(_user_lim_kanal(n) == lim_0 for n in kanäle[1:])) else None
+        if lim is not None and lim in lim_zu_idx:
+            idx = lim_zu_idx[lim]
+            ex_titel, ex_kanäle = final_achsen[idx]
+            ex_einheiten = [e.strip() for e in ex_titel.split(' / ')]
+            if einheit not in ex_einheiten:
+                ex_titel = ex_titel + ' / ' + einheit
+            final_achsen[idx] = (ex_titel, ex_kanäle + kanäle)
         else:
-            merged_achsen.append((titel, kanäle))
-
-    final_achsen = merged_achsen
+            if lim is not None:
+                lim_zu_idx[lim] = len(final_achsen)
+            final_achsen.append((einheit, list(kanäle)))
 
     # --- Schritt 4: Kanal → yaxis Zuordnung ---
     kanal_zu_yaxis: dict[str, str] = {}
@@ -467,17 +486,58 @@ def _make_off_cb(i: int):
 OFF_CALLBACKS = [_make_off_cb(i) for i in range(1, N_KANÄLE + 1)]
 
 
-def _ableit_info(einheit: str) -> tuple[str, str, float, float]:
+_ZEIT_TO_S: dict[str, float] = {'s': 1.0, 'ms': 1e-3, 'µs': 1e-6, 'ns': 1e-9}
+
+
+def _ableit_info(einheit: str, zeit_einheit: str = 'ms') -> tuple[str, str, float, float]:
     """(v_einheit, a_einheit, v_faktor, a_faktor) für eine Kanal-Einheit.
 
-    Für µm: Umrechnung in konventionelle Einheiten (mm/s, m/s²).
-    Für alle anderen Einheiten: einheit/s und einheit/s² ohne Umrechnung.
-    v_faktor/a_faktor wandeln SG-Rohableitung ([einheit]/s, [einheit]/s²) in
-    die Anzeigeeinheit um.
+    v_faktor/a_faktor wandeln SG-Rohableitung (einheit/s, einheit/s²) in
+    einheit/zeit_einheit bzw. einheit/zeit_einheit² um.
     """
-    if einheit == 'µm':
-        return 'mm/s', 'm/s²', 1e-3, 1e-6
-    return f'{einheit}/s', f'{einheit}/s²', 1.0, 1.0
+    zhf = 1.0 / _ZEIT_TO_S.get(zeit_einheit, 1e-3)   # s⁻¹ → display_unit⁻¹
+    return (f'{einheit}/{zeit_einheit}', f'{einheit}/{zeit_einheit}²',
+            1.0 / zhf, 1.0 / (zhf ** 2))
+
+
+def _fmt_zeit(value: float, einheit: str) -> str:
+    """Formatiert Zeitwert mit automatisch gewählter Einheit (s/ms/µs/ns).
+    Wechselt die Einheit wenn mehr als 3 Dezimal- oder Vorkommastellen nötig.
+    """
+    val_s = value * _ZEIT_TO_S.get(einheit, 1e-3)
+    if val_s == 0:
+        return f"0.000 {einheit}"
+    for unit in ('s', 'ms', 'µs', 'ns'):
+        scaled = abs(val_s) / _ZEIT_TO_S[unit]
+        if scaled >= 0.001:
+            prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
+            return f"{val_s / _ZEIT_TO_S[unit]:{prec}} {unit}"
+    return f"{val_s / _ZEIT_TO_S['ns']:.3f} ns"
+
+
+def _fmt_freq(value_hz: float) -> str:
+    """Formatiert Frequenz mit automatisch gewählter Einheit (Hz/kHz/MHz/GHz)."""
+    if np.isnan(value_hz) or value_hz <= 0:
+        return "N/A"
+    abs_hz = abs(value_hz)
+    if abs_hz >= 1e9:
+        return f"{value_hz/1e9:.3f} GHz"
+    if abs_hz >= 1e6:
+        return f"{value_hz/1e6:.3f} MHz"
+    if abs_hz >= 1e3:
+        return f"{value_hz/1e3:.3f} kHz"
+    return f"{value_hz:.3f} Hz"
+
+
+def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
+    """Formatiert Messwert: bei sehr kleinen/großen Absolutwerten SI-Prefix wählen."""
+    if np.isnan(value):
+        return "N/A"
+    abs_v = abs(value)
+    if abs_v == 0 or (0.001 <= abs_v < 10_000):
+        return f"{value:.{prec}f} {einheit}"
+    # Zu viele Vor- oder Nachkommastellen → Wissenschaftliche Notation
+    return f"{value:.{prec}e} {einheit}"
 
 def update_sample_rate_unit():
     new_unit = "µs" if st.session_state.sample_rate_unit_toggle else "Hz"
@@ -741,13 +801,14 @@ def build_chart_png(
     alle_sensor_namen: list[str] | None = None,
     hz_faktor: float = 1000.0,
     zeit_einheit: str = 'ms',
+    kanal_ch_num: dict | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
         kanal_einheit_map = {n: 'µm' for n in sensor_namen}
 
     _aktiv_e_e = kanal_einheit_map.get(active_sensor, 'µm')
-    v_einheit_e, a_einheit_e, v_faktor_e, a_faktor_e = _ableit_info(_aktiv_e_e)
+    v_einheit_e, a_einheit_e, v_faktor_e, a_faktor_e = _ableit_info(_aktiv_e_e, zeit_einheit)
 
     # Y-Achse: 15 % Puffer – nur Kanäle der primären Einheit berücksichtigen
     _prim_e = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sensor_namen)), 'µm')
@@ -782,6 +843,7 @@ def build_chart_png(
         v_einheit=v_einheit_e, a_einheit=a_einheit_e,
         kanal_farbe_map=_kanal_farbe_e,
         kanal_bereiche=_kanal_bereiche_e,
+        kanal_ch_num=kanal_ch_num,
     )
     active_yaxis_e = kanal_zu_yaxis_e.get(active_sensor, 'y')
 
@@ -1208,21 +1270,19 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     help=f"Zeitversatz in {_zeit_einheit} – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
 
-    # Aktive Einheiten aus konfigurierten Kanälen bestimmen
-    _grenzw_einheiten = list(dict.fromkeys(
-        st.session_state.get(f'ch{_i}_einheit', 'µm')
-        for _i in range(1, N_KANÄLE + 1)
-        if st.session_state.get(f'ch{_i}_name', '').strip()
-    )) or ['µm']
-
     with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte", on_change=_SUB_EXPANDER_CBS['sub_grenzwerte']):
-        for _e in _grenzw_einheiten:
-            st.caption(_e)
+        st.caption("min / max  (0 = automatisch)")
+        for _i in range(1, N_KANÄLE + 1):
+            _ch_name = st.session_state.get(f'ch{_i}_name', '').strip()
+            if not _ch_name:
+                continue
+            _ch_einh = st.session_state.get(f'ch{_i}_einheit', 'µm')
+            st.caption(f"{_ch_name}  ({_ch_einh})")
             _gc1, _gc2 = st.columns(2)
-            _gc1.number_input(f"min ({_e})", step=1.0, format="%.2f",
-                              key=einheit_ss_key_min(_e), label_visibility="collapsed")
-            _gc2.number_input(f"max ({_e})", step=1.0, format="%.2f",
-                              key=einheit_ss_key_max(_e), label_visibility="collapsed")
+            _gc1.number_input(f"min {_ch_name}", step=1.0, format="%.2f",
+                              key=f'ch{_i}_ymin', label_visibility="collapsed")
+            _gc2.number_input(f"max {_ch_name}", step=1.0, format="%.2f",
+                              key=f'ch{_i}_ymax', label_visibility="collapsed")
         st.caption("D (1. Ableitung)")
         _vc1, _vc2 = st.columns(2)
         _vc1.number_input("min (D)", step=100.0, format="%.0f",
@@ -1423,7 +1483,7 @@ sichtbare_sensor_namen = [
 
 # Ableitungs-Einheiten und Konversionsfaktoren für den aktiven Kanal
 _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
-v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit)
+v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_einheit)
 
 # Cursor-Werte auf aktiven Zeitbereich begrenzen.
 # Alle drei gebundenen Keys (xa, xa_sw, xa_nw) werden synchronisiert damit
@@ -1458,14 +1518,33 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
-    _tb_f = _zhf / 1e3   # ms → aktuelle Zeiteinheit (nur Rückrechnung)
+    _tb_f = _zhf / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
+    _x_len = max(1e-9, max_zeit - min_zeit)
+    _tb_min_curr = _x_len / 200
+    _tb_max_curr = _x_len * 0.75
+    # Beste Untereinheit: kleinste bei der min >= 0.001 (≤3 Dezimalstellen)
+    _val_s_min = _tb_min_curr * _ZEIT_TO_S.get(_zeit_einheit, 1e-3)
+    _tb_s_einheit = 'ns'
+    for _u in ('s', 'ms', 'µs', 'ns'):
+        if abs(_val_s_min) / _ZEIT_TO_S[_u] >= 0.001:
+            _tb_s_einheit = _u
+            break
+    _tb_s_scale = _ZEIT_TO_S.get(_zeit_einheit, 1e-3) / _ZEIT_TO_S[_tb_s_einheit]
+    _tb_min_d = _tb_min_curr * _tb_s_scale
+    _tb_max_d = _tb_max_curr * _tb_s_scale
+    _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
+    _tb_step_d = max(1e-12, (_tb_max_d - _tb_min_d) / 100)
+    _tb_mag = _tb_min_d
+    _tb_fmt = ("%.0f" if _tb_mag >= 10 else
+               "%.2f" if _tb_mag >= 0.1 else
+               "%.4f" if _tb_mag >= 0.001 else "%.6f")
     _v_tb_display = st.slider(
-        f"Zeitbasis D-max ({_zeit_einheit})",
-        0.010, 0.100, 0.030,
-        step=0.005, format=f"%.3f {_zeit_einheit}",
+        f"Zeitbasis D-max ({_tb_s_einheit})",
+        _tb_min_d, _tb_max_d, _tb_def_d,
+        step=_tb_step_d, format=f"{_tb_fmt} {_tb_s_einheit}",
         help="Mittelungsfenster für D-max, D2-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
-    v_time_base_ms = _v_tb_display / _tb_f
+    v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
 
 show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", key="show_v_avg",
                                   help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate D (A-B).")
@@ -1693,6 +1772,7 @@ kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout
     kanal_farbe_map=_kanal_farbe_map,
     y_ranges_fallback=_yrange_fallback,
     kanal_bereiche=_kanal_bereiche,
+    kanal_ch_num=_sensor_ch_num,
 )
 active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -1778,8 +1858,8 @@ if show_acceleration and acceleration is not None:
 
 _y_lim_keys = (
     ['v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max']
-    + [einheit_ss_key_min(e) for e in EINHEIT_ALLE]
-    + [einheit_ss_key_max(e) for e in EINHEIT_ALLE]
+    + [f'ch{_i}_ymin' for _i in range(1, N_KANÄLE + 1)]
+    + [f'ch{_i}_ymax' for _i in range(1, N_KANÄLE + 1)]
 )
 _y_lim_token  = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
 # Achsen-Struktur-Token: erzwingt Plotly-Reset wenn sich Kanal↔Achse-Zuordnung ändert
@@ -1804,13 +1884,13 @@ st.plotly_chart(fig, width="stretch", key="main_chart")
 c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
     st.slider(
-        "XA", min_zeit, max_zeit, value=xa,
+        "XA", min_zeit, max_zeit,
         key="xa_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xa_from_slider, label_visibility="collapsed",
         help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
     )
     st.slider(
-        "XB", min_zeit, max_zeit, value=xb,
+        "XB", min_zeit, max_zeit,
         key="xb_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xb_from_slider, label_visibility="collapsed",
         help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
@@ -1857,22 +1937,22 @@ hub     = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None el
 
 # Zeile 1 – Zeit & Signal
 z1, z2, z3, z4 = st.columns(4)
-z1.metric("Δt (A-B)",          f"{dt_val_ms:.3f} ms")
-z2.metric("Frequenz Δt (A-B)", f"{freq_hz:.1f} Hz"          if not np.isnan(freq_hz) else "N/A")
-z3.metric("Δs (A-B)",          f"{dy:.1f} {_aktiv_einheit}")
-z4.metric("Hub Best-fit",      f"{hub:.1f} {_aktiv_einheit}" if not np.isnan(hub) else "N/A")
+z1.metric("Δt (A-B)",          _fmt_zeit(dt_val_ms, _zeit_einheit))
+z2.metric("Frequenz Δt (A-B)", _fmt_freq(freq_hz))
+z3.metric("Δs (A-B)",          _fmt_val(dy, _aktiv_einheit))
+z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub) else "N/A")
 
 # Zeile 2 – D (1. Ableitung)
 g1, g2, g3, g4 = st.columns(4)
-g1.metric("D (A-B)",           f"{v_avg:.1f} {v_einheit}")
-g2.metric("ΔD (A-B)",          f"{v_cursor_delta:.1f} {v_einheit}" if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric("D max (Peak)",      f"{v_max:.1f} {v_einheit}"          if not np.isnan(v_max) else "N/A")
-g4.metric("SOP",               f"{v_sop:.1f} {v_einheit}"          if not np.isnan(v_sop) else "N/A")
+g1.metric("D (A-B)",           _fmt_val(v_avg, v_einheit))
+g2.metric("ΔD (A-B)",          _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric("D max (Peak)",      _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
+g4.metric("SOP",               _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
 
 # Zeile 3 – D2 (2. Ableitung)
 a1, a2 = st.columns(2)
-a1.metric("D2 max Fall.",      f"{a_max_falling:.1f} {a_einheit}"  if not np.isnan(a_max_falling) else "N/A")
-a2.metric("D2 min Rise.",      f"{a_min_rising:.1f} {a_einheit}"   if not np.isnan(a_min_rising) else "N/A")
+a1.metric("D2 max Fall.",      _fmt_val(a_max_falling, a_einheit)  if not np.isnan(a_max_falling) else "N/A")
+a2.metric("D2 min Rise.",      _fmt_val(a_min_rising, a_einheit)   if not np.isnan(a_min_rising) else "N/A")
 
 # ---------------------------------------------------------------------------
 # EXPORT
@@ -1881,20 +1961,20 @@ a2.metric("D2 min Rise.",      f"{a_min_rising:.1f} {a_einheit}"   if not np.isn
 st.sidebar.header("3. Export")
 metrics = {
     # Zeit & Signal
-    "XA (ms)":              f"{xa:.3f}",
-    "XB (ms)":              f"{xb:.3f}",
-    "Δt (A-B)":             f"{dt_val_ms:.3f} ms",
-    "Frequenz Δt (A-B)":    f"{freq_hz:.1f} Hz"                        if not np.isnan(freq_hz) else "N/A",
-    "Δs (A-B)":             f"{dy:.1f} {_aktiv_einheit}",
-    "Hub Best-fit":         f"{hub:.1f} {_aktiv_einheit}"              if not np.isnan(hub) else "N/A",
+    f"XA ({_zeit_einheit})":    _fmt_zeit(xa, _zeit_einheit),
+    f"XB ({_zeit_einheit})":    _fmt_zeit(xb, _zeit_einheit),
+    "Δt (A-B)":                 _fmt_zeit(dt_val_ms, _zeit_einheit),
+    "Frequenz Δt (A-B)":        _fmt_freq(freq_hz),
+    "Δs (A-B)":                 _fmt_val(dy, _aktiv_einheit),
+    "Hub Best-fit":             _fmt_val(hub, _aktiv_einheit)              if not np.isnan(hub) else "N/A",
     # D (1. Ableitung)
-    "D (A-B)":              f"{v_avg:.1f} {v_einheit}",
-    f"ΔD (A-B)":            f"{v_cursor_delta:.1f} {v_einheit}"        if not np.isnan(v_cursor_delta) else "N/A",
-    "D max (Peak)":         f"{v_max:.1f} {v_einheit}"                 if not np.isnan(v_max) else "N/A",
-    "SOP":                  f"{v_sop:.1f} {v_einheit}"                 if not np.isnan(v_sop) else "N/A",
+    "D (A-B)":                  _fmt_val(v_avg, v_einheit),
+    "ΔD (A-B)":                 _fmt_val(v_cursor_delta, v_einheit)        if not np.isnan(v_cursor_delta) else "N/A",
+    "D max (Peak)":             _fmt_val(v_max, v_einheit)                 if not np.isnan(v_max) else "N/A",
+    "SOP":                      _fmt_val(v_sop, v_einheit)                 if not np.isnan(v_sop) else "N/A",
     # D2 (2. Ableitung)
-    "D2 max Fall.":         f"{a_max_falling:.1f} {a_einheit}"         if not np.isnan(a_max_falling) else "N/A",
-    "D2 min Rise.":         f"{a_min_rising:.1f} {a_einheit}"          if not np.isnan(a_min_rising) else "N/A",
+    "D2 max Fall.":             _fmt_val(a_max_falling, a_einheit)         if not np.isnan(a_max_falling) else "N/A",
+    "D2 min Rise.":             _fmt_val(a_min_rising, a_einheit)          if not np.isnan(a_min_rising) else "N/A",
 }
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
@@ -1921,6 +2001,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 alle_sensor_namen=sensor_namen,
                 hz_faktor=_zhf,
                 zeit_einheit=_zeit_einheit,
+                kanal_ch_num=_sensor_ch_num,
             )
             stem = uploaded_file.name.rsplit('.', 1)[0]
             if export_format == "PDF":
