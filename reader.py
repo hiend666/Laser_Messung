@@ -271,8 +271,6 @@ def read_oszilloskop_csv(
     if len(lines) < 3:
         raise ValueError("Oszilloskop-CSV: Datei hat zu wenige Zeilen.")
 
-    n_cols = len(lines[0].split(','))   # x-axis + n Kanäle
-
     data_lines: list[str] = []
     for line in lines[2:]:
         line = line.strip()
@@ -285,8 +283,7 @@ def read_oszilloskop_csv(
             float(parts[0])
         except (ValueError, IndexError):
             continue
-        kanal_parts = parts[1:n_cols]
-        if len(kanal_parts) >= n_kanäle and all(p.strip() for p in kanal_parts[:n_kanäle]):
+        if len(parts) > n_kanäle and all(p.strip() for p in parts[1:n_kanäle + 1]):
             data_lines.append(line)
         if nrows is not None and len(data_lines) >= nrows:
             break
@@ -351,7 +348,14 @@ def detect_kanal_count(file_bytes: bytes, file_type: str, skip_rows: int = 0) ->
     try:
         if file_type == "Oszilloskop CSV":
             kanal_indices, _ = peek_oszilloskop_header(file_bytes)
-            return max(1, len(kanal_indices))
+            n = len(kanal_indices)
+            if n == 0:
+                # Fallback für nicht-numerische Spaltenköpfe (z.B. CH1, CH2, ...)
+                content = file_bytes.decode('utf-8', errors='ignore')
+                first_line = content.splitlines()[0] if content.splitlines() else ''
+                header_cols = [p.strip() for p in first_line.split(',')[1:] if p.strip()]
+                n = len(header_cols)
+            return max(1, n)
 
         if file_type == "Hubmessung":
             content = file_bytes.decode('utf-8', errors='ignore')
