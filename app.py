@@ -66,7 +66,7 @@ FARBE_RECHTECK  = 'lime'
 # STREAMLIT-SEITENKONFIGURATION UND CSS
 # ---------------------------------------------------------------------------
 
-st.set_page_config(layout="wide", page_title="Messdaten Auswertung")
+st.set_page_config(layout="wide", page_title="VERMESsdaten Auswertung")
 st.markdown("""
     <style>
     div[data-baseweb="slider"] > div > div > div {
