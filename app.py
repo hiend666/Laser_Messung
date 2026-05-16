@@ -1057,6 +1057,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             pass
         st.session_state['n_kanäle_datei'] = _n_show
 
+    # Vor Widget-Rendering: leere Kanalnamen für erkannte Datei-Kanäle auffüllen
+    if uploaded_file and _n_show > 0:
+        for _i in range(1, _n_show + 1):
+            if not st.session_state.get(f'ch{_i}_name', '').strip():
+                st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
+
     with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele", on_change=_SUB_EXPANDER_CBS['sub_kanaele']):
         st.caption("Leer: wird beim Schließen automatisch als 'Kanal N' benannt.")
         # Für Oszilloskop: Einheiten aus Datei-Header vorlesen
@@ -1079,7 +1085,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             )
             if file_type == "Oszilloskop CSV":
                 _col_skale.number_input(
-                    "×", value=st.session_state[_skale_key],
+                    "×",
                     step=0.01, format="%.2f", key=_skale_key,
                     help="Skalierungsfaktor (Rohwert × Faktor).",
                 )
@@ -1131,12 +1137,15 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             _n_d = st.session_state.get('n_kanäle_datei', N_KANÄLE)
             for _i in range(_n_d + 1, N_KANÄLE + 1):
                 st.session_state[f'ch{_i}_name'] = ''
+            # Alle erkannten Kanäle einblenden
+            for _i in range(1, _n_show + 1):
+                st.session_state[f'show_ch{_i}'] = True
             st.session_state.xa    = total_time_ms * 0.30
             st.session_state.xa_sw = total_time_ms * 0.30
             st.session_state.xa_nw = total_time_ms * 0.30
-            st.session_state.xb    = total_time_ms * 0.50
-            st.session_state.xb_sw = total_time_ms * 0.50
-            st.session_state.xb_nw = total_time_ms * 0.50
+            st.session_state.xb    = total_time_ms * 0.60
+            st.session_state.xb_sw = total_time_ms * 0.60
+            st.session_state.xb_nw = total_time_ms * 0.60
             st.session_state.crop_start     = None
             st.session_state.crop_end       = None
             st.session_state.zoom_token    += 1
@@ -1165,6 +1174,13 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                         st.session_state[f'off{i+1}']        = val
                         st.session_state[f'off{i+1}_slider'] = val
                         st.rerun()
+
+            if st.button("↺ Reset (alle auf 0)", key="reset_offsets",
+                         help="Setzt alle Y-Offsets auf 0.", use_container_width=True):
+                for _ri in range(1, N_KANÄLE + 1):
+                    st.session_state[f'off{_ri}']        = 0.0
+                    st.session_state[f'off{_ri}_slider'] = 0.0
+                st.rerun()
 
             st.markdown("")
             for i, name in enumerate(sensor_namen):
@@ -1346,9 +1362,9 @@ if st.session_state.last_file_name != uploaded_file.name:
     st.session_state.xa    = total_time_ms * 0.30
     st.session_state.xa_sw = total_time_ms * 0.30
     st.session_state.xa_nw = total_time_ms * 0.30
-    st.session_state.xb    = total_time_ms * 0.50
-    st.session_state.xb_sw = total_time_ms * 0.50
-    st.session_state.xb_nw = total_time_ms * 0.50
+    st.session_state.xb    = total_time_ms * 0.60
+    st.session_state.xb_sw = total_time_ms * 0.60
+    st.session_state.xb_nw = total_time_ms * 0.60
     st.session_state.crop_start     = None
     st.session_state.crop_end       = None
     st.session_state.zoom_token    += 1
@@ -1430,23 +1446,26 @@ if (xb != st.session_state.xb
 with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     st.number_input(
         f"Zeit XA ({_zeit_einheit})", min_zeit, max_zeit,
-        value=xa, step=0.001, format="%.3f",
+        step=0.001, format="%.3f",
         key="xa_nw", on_change=update_xa_from_num,
         help=f"Linker Zeitcursor ({_zeit_einheit}) – Startpunkt für Δt, Δs und D (A-B).",
     )
     st.number_input(
         f"Zeit XB ({_zeit_einheit})", min_zeit, max_zeit,
-        value=xb, step=0.001, format="%.3f",
+        step=0.001, format="%.3f",
         key="xb_nw", on_change=update_xb_from_num,
         help=f"Rechter Zeitcursor ({_zeit_einheit}) – Endpunkt für Δt, Δs und D (A-B).",
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
-    v_time_base_ms = st.slider(
-        "Zeitbasis D-max (ms)", 0.010, 0.10, 0.03,
-        step=0.005, format="%.3f ms",
+    _tb_f = _zhf / 1e3   # ms → aktuelle Zeiteinheit (nur Rückrechnung)
+    _v_tb_display = st.slider(
+        f"Zeitbasis D-max ({_zeit_einheit})",
+        0.010, 0.100, 0.030,
+        step=0.005, format=f"%.3f {_zeit_einheit}",
         help="Mittelungsfenster für D-max, D2-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
+    v_time_base_ms = _v_tb_display / _tb_f
 
 show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", key="show_v_avg",
                                   help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate D (A-B).")
@@ -1811,14 +1830,8 @@ with btn_col1:
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
         st.session_state.crop_start = crop_t0
         st.session_state.crop_end   = crop_t1
-        _xa_new = float(min(xa, xb))
-        _xb_new = float(max(xa, xb))
-        st.session_state.xa    = _xa_new
-        st.session_state.xa_sw = _xa_new
-        st.session_state.xa_nw = _xa_new
-        st.session_state.xb    = _xb_new
-        st.session_state.xb_sw = _xb_new
-        st.session_state.xb_nw = _xb_new
+        st.session_state.xa    = float(min(xa, xb))
+        st.session_state.xb    = float(max(xa, xb))
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
