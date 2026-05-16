@@ -23,6 +23,26 @@ def build_time_axis(n_samples: int, sr_hz: float) -> np.ndarray:
     return np.arange(n_samples) * (1000.0 / sr_hz)
 
 
+def wahl_zeiteinheit(max_s: float) -> tuple[float, str]:
+    """Wählt die beste Zeiteinheit für die Anzeige.
+
+    Ziel: Maximalwert soll zwischen 0.02 und 800 liegen.
+    Gibt (hz_faktor, einheit_label) zurück:
+    - hz_faktor:     Sekunden × hz_faktor = Anzeigewert
+    - einheit_label: 's', 'ms', 'µs' oder 'ns'
+    """
+    kandidaten = [(1.0, 's'), (1e3, 'ms'), (1e6, 'µs'), (1e9, 'ns')]
+    for hz_faktor, label in kandidaten:
+        val = max_s * hz_faktor
+        if 0.020 <= val <= 800:
+            return hz_faktor, label
+    # Kein perfektes Fenster: erste Einheit nehmen bei der max >= 0.02
+    for hz_faktor, label in kandidaten:
+        if max_s * hz_faktor >= 0.020:
+            return hz_faktor, label
+    return 1e9, 'ns'
+
+
 # ===========================================================================
 # SAVITZKY-GOLAY ABLEITUNGEN
 # ===========================================================================
@@ -225,7 +245,7 @@ def read_oszilloskop_csv(
     max_samples: int,
     kanal_namen: tuple[str, ...],
     kanal_skalierung: tuple[float, ...],
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, float]:
     """Liest Oszilloskop-CSV-Format.
 
     Dateiformat:
@@ -235,8 +255,12 @@ def read_oszilloskop_csv(
 
     Zeilen mit leeren Kanal-Spalten werden übersprungen.
     Zeitachse wird auf t=0 beim ersten vollständigen Sample normiert.
+    Die Zeiteinheit wird automatisch gewählt (s/ms/µs/ns) sodass
+    die Anzeigewerte zwischen 0.02 und 800 liegen.
 
-    Gibt DataFrame mit 'Zeit (ms)' und benannten, skalierten Kanalspalten zurück.
+    Gibt (DataFrame, hz_faktor) zurück:
+    - DataFrame: 'Zeit (ms)' (Werte in der gewählten Einheit) + Kanalspalten
+    - hz_faktor: Umrechnungsfaktor s → Anzeigeeinheit (z.B. 1e6 für µs)
     """
     n_kanäle = len(kanal_namen)
     nrows    = max_samples if max_samples > 0 else None
@@ -280,15 +304,17 @@ def read_oszilloskop_csv(
         )
 
     zeit_s  = df.iloc[:, 0].values.astype(float)
-    zeit_ms = (zeit_s - zeit_s[0]) * 1000.0
+    max_s   = float(abs(zeit_s[-1] - zeit_s[0])) if len(zeit_s) > 1 else 1e-3
+    hz_faktor, _ = wahl_zeiteinheit(max_s)
+    zeit_display = (zeit_s - zeit_s[0]) * hz_faktor
 
     result_df = pd.DataFrame()
-    result_df['Zeit (ms)'] = zeit_ms
+    result_df['Zeit (ms)'] = zeit_display
     for i, name in enumerate(kanal_namen):
         skale = kanal_skalierung[i] if i < len(kanal_skalierung) else 1.0
         result_df[name] = df.iloc[:, i + 1].values.astype(float) * skale
 
-    return result_df
+    return result_df, hz_faktor
 
 
 # ===========================================================================
@@ -302,18 +328,62 @@ def load_raw(
     max_samples: int,
     kanal_namen: tuple[str, ...],
     kanal_skalierung: tuple[float, ...] = (),
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, float]:
     """Liest Rohdaten formatunabhängig ein.
 
-    Gibt DataFrame zurück:
-    - 'Hubmessung' / 'Oszilloskop CSV': enthält 'Zeit (ms)' + Kanalspalten
-    - 'CSV plain': enthält nur Kanalspalten (keine Zeitachse)
+    Gibt (DataFrame, hz_faktor) zurück:
+    - 'Hubmessung': hz_faktor = 1000.0 (Zeit bereits in ms)
+    - 'Oszilloskop CSV': hz_faktor automatisch gewählt (1e3/1e6/1e9/1.0)
+    - 'CSV plain': hz_faktor = 1000.0 (Zeitachse wird separat gebaut)
     """
     if file_type == "Hubmessung":
-        return read_hubmessung_txt(file_bytes, max_samples, kanal_namen)
+        return read_hubmessung_txt(file_bytes, max_samples, kanal_namen), 1000.0
     if file_type == "Oszilloskop CSV":
         return read_oszilloskop_csv(file_bytes, max_samples, kanal_namen, kanal_skalierung)
-    return read_csv_plain(file_bytes, skip_rows, max_samples, kanal_namen)
+    return read_csv_plain(file_bytes, skip_rows, max_samples, kanal_namen), 1000.0
+
+
+def detect_kanal_count(file_bytes: bytes, file_type: str, skip_rows: int = 0) -> int:
+    """Erkennt die Anzahl der Messdaten-Kanäle in der Datei (ohne Zeitspalte).
+
+    Bei Fehler oder unbekanntem Format wird 4 zurückgegeben.
+    """
+    try:
+        if file_type == "Oszilloskop CSV":
+            kanal_indices, _ = peek_oszilloskop_header(file_bytes)
+            return max(1, len(kanal_indices))
+
+        if file_type == "Hubmessung":
+            content = file_bytes.decode('utf-8', errors='ignore')
+            lines   = content.splitlines()
+            for i, line in enumerate(lines):
+                if "####Test Data####" in line:
+                    for raw in lines[i + 2:]:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        parts = raw.split('\t')
+                        try:
+                            float(parts[0])
+                            return max(1, len([p for p in parts if p.strip()]) - 1)
+                        except (ValueError, IndexError):
+                            continue
+            return 1
+
+        # CSV plain
+        probe      = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
+                                 skiprows=skip_rows, nrows=3)
+        probe      = probe.dropna(axis=1, how='all')
+        first_cell = str(probe.iloc[0, 0]).strip()
+        try:
+            float(first_cell)
+            data_cols = [c for c in probe.columns if pd.api.types.is_numeric_dtype(probe[c])]
+            return max(1, len(data_cols))
+        except ValueError:
+            sensor_cols = [c for c in probe.columns if c != 'Zeit (s)']
+            return max(1, len(sensor_cols))
+    except Exception:
+        return 4
 
 
 def build_display_df(
@@ -322,6 +392,7 @@ def build_display_df(
     sample_rate_hz: float,
     kanal_namen: tuple[str, ...],
     offsets: tuple[float, ...],
+    zeit_hz_faktor: float = 1000.0,
 ) -> tuple[pd.DataFrame, float]:
     """Erstellt den anzeigefertigen DataFrame mit Zeitachse und Y-Offsets.
 
@@ -329,14 +400,15 @@ def build_display_df(
     übernommen und die Samplerate daraus abgeleitet.
     Für 'CSV plain' wird die Zeitachse über build_time_axis() erzeugt.
 
+    zeit_hz_faktor: Umrechnungsfaktor Anzeigeeinheit → Hz (z.B. 1e6 für µs).
     Gibt (df_full, tatsächliche_samplerate_hz) zurück.
     """
     if file_type in ("Hubmessung", "Oszilloskop CSV"):
         zeit = raw_df['Zeit (ms)'].values
         if len(zeit) > 1:
-            dt_ms = float(zeit[1] - zeit[0])
-            if dt_ms > 0:
-                sample_rate_hz = 1000.0 / dt_ms
+            dt = float(zeit[1] - zeit[0])
+            if dt > 0:
+                sample_rate_hz = zeit_hz_faktor / dt
     else:
         zeit = build_time_axis(len(raw_df), sample_rate_hz)
 

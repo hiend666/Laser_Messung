@@ -22,7 +22,7 @@ from reportlab.lib.units import mm
 
 import reader
 
-VERSION = "v1.00.12"
+VERSION = "v1.00.14"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -34,7 +34,8 @@ MAX_PLOT_PUNKTE = 5_000     # Downsampling-Schwelle für interaktives Diagramm
 EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
 EINHEIT_ALLE = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
 
-N_KANÄLE = 4  # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
+N_KANÄLE    = 4     # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
+SPLIT_FAKTOR = 15.0  # Y-Achsen-Aufteilung bei gleicher Einheit wenn Bereiche > Faktor abweichen
 
 def _einh_sfx(einheit: str) -> str:
     return einheit.replace('µ', 'u').replace('°', 'deg').replace('%', 'pct').replace('/', 'p')
@@ -121,6 +122,8 @@ defaults = {
     'v_axis_max':  3_200,
     'a_axis_min': -20_000,
     'a_axis_max':  20_000,
+    'zeit_hz_faktor': 1000.0,  # Umrechnungsfaktor s → Anzeigeeinheit (1e3=ms, 1e6=µs, 1e9=ns)
+    'n_kanäle_datei': N_KANÄLE,  # Kanalanzahl laut geladener Datei
     'sub_dateityp':   True,
     'sub_einlesen':   False,
     'sub_kanaele':    False,
@@ -190,83 +193,147 @@ def _yachsen_layout(
     a_einheit: str = 'm/s²',
     kanal_farbe_map: dict[str, str] | None = None,
     y_ranges_fallback: dict[str, list] | None = None,
+    kanal_bereiche: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[dict, dict, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
-    Kanäle mit gleicher Einheit teilen sich eine Achse. Die erste Einheit
-    landet links, alle weiteren rechts. Achspositionen werden automatisch
-    berechnet so dass sich rechte Achsen nicht überlappen.
+    Kanäle gleicher Einheit teilen eine Achse – außer wenn ihre Wertebereiche
+    um mehr als SPLIT_FAKTOR voneinander abweichen (dann separate Achsen).
+    Achsen mit identischen manuellen Grenzen werden zusammengeführt;
+    der Achstitel zeigt alle betroffenen Einheiten (z.B. 'µm / V').
+    Die erste Einheit landet links, alle weiteren rechts.
 
     Gibt zurück:
-    - einheit_zu_yaxis: {'µm': 'y', 'V': 'y2', ...}
-    - layout_yachsen:   dict für fig.update_layout(**layout_yachsen)
-    - v_yaxis:          yaxis-String für Geschwindigkeit
-    - a_yaxis:          yaxis-String für Beschleunigung
-    - x_domain_end:     rechte Grenze des Plot-Bereichs (0…1)
+    - kanal_zu_yaxis: {'Festo': 'y', 'DST': 'y2', ...}
+    - layout_yachsen:  dict für fig.update_layout(**layout_yachsen)
+    - v_yaxis:         yaxis-String für Geschwindigkeit
+    - a_yaxis:         yaxis-String für Beschleunigung
+    - x_domain_end:    rechte Grenze des Plot-Bereichs (0…1)
     """
     STEP = 0.07
 
-    unique_einheiten = list(dict.fromkeys(
-        kanal_einheit_map.get(n, 'µm') for n in kanal_namen
-    ))
-    n_sig = len(unique_einheiten)
+    def _user_lim(einheit: str) -> tuple[float, float] | None:
+        lo = float(st.session_state.get(einheit_ss_key_min(einheit), 0))
+        hi = float(st.session_state.get(einheit_ss_key_max(einheit), 0))
+        return (lo, hi) if (lo != 0 or hi != 0) else None
 
-    einheit_zu_yaxis = {e: ('y' if i == 0 else f'y{i+1}') for i, e in enumerate(unique_einheiten)}
+    def _kanal_span(name: str) -> float | None:
+        if kanal_bereiche and name in kanal_bereiche:
+            lo, hi = kanal_bereiche[name]
+            return abs(hi - lo)
+        return None
+
+    def _achsfarbe(kanäle: list[str]) -> dict:
+        if not kanal_farbe_map:
+            return {}
+        for n in kanäle:
+            if n in kanal_farbe_map:
+                return dict(color=kanal_farbe_map[n])
+        return {}
+
+    def _fallback_rng(titel: str, kanäle: list[str]) -> list | None:
+        if len(kanäle) == 1 and kanal_bereiche and kanäle[0] in kanal_bereiche:
+            lo, hi = kanal_bereiche[kanäle[0]]
+            span = abs(hi - lo)
+            return [lo, hi + span * 0.15]
+        if y_ranges_fallback:
+            for e in [e.strip() for e in titel.split(' / ')]:
+                if e in y_ranges_fallback:
+                    return y_ranges_fallback[e]
+        return None
+
+    def _rng(titel: str, kanäle: list[str]) -> list | None:
+        for e in [e.strip() for e in titel.split(' / ')]:
+            lo = float(st.session_state.get(einheit_ss_key_min(e), 0))
+            hi = float(st.session_state.get(einheit_ss_key_max(e), 0))
+            if lo != 0 or hi != 0:
+                return [lo, hi]
+        return _fallback_rng(titel, kanäle)
+
+    # --- Schritt 1: Einheiten-basierte Gruppen (Reihenfolge aus kanal_namen) ---
+    einheit_gruppen: dict[str, list[str]] = {}
+    for n in kanal_namen:
+        einheit_gruppen.setdefault(kanal_einheit_map.get(n, 'µm'), []).append(n)
+
+    # --- Schritt 2: Aufteilen wenn Wertebereich > SPLIT_FAKTOR ---
+    final_achsen: list[tuple[str, list[str]]] = []   # (titel, kanal_liste)
+    for einheit, kanäle in einheit_gruppen.items():
+        if len(kanäle) <= 1 or _user_lim(einheit) is not None:
+            final_achsen.append((einheit, list(kanäle)))
+            continue
+        spans = []
+        for n in kanäle:
+            s = _kanal_span(n)
+            if s is not None and s > 0:
+                spans.append(s)
+        if len(spans) >= 2 and max(spans) / min(spans) > SPLIT_FAKTOR:
+            for n in kanäle:
+                final_achsen.append((einheit, [n]))
+        else:
+            final_achsen.append((einheit, list(kanäle)))
+
+    # --- Schritt 3: Achsen mit gleichen manuellen Grenzen zusammenführen ---
+    merged_achsen: list[tuple[str, list[str]]] = []
+    lim_zu_idx: dict[tuple[float, float], int] = {}
+
+    for titel, kanäle in final_achsen:
+        lim = _user_lim(titel.split(' / ')[0].strip())
+        if lim is not None:
+            if lim in lim_zu_idx:
+                idx = lim_zu_idx[lim]
+                ex_titel, ex_kanäle = merged_achsen[idx]
+                ex_einheiten = [e.strip() for e in ex_titel.split(' / ')]
+                if titel not in ex_einheiten:
+                    ex_titel = ex_titel + ' / ' + titel
+                merged_achsen[idx] = (ex_titel, ex_kanäle + kanäle)
+            else:
+                lim_zu_idx[lim] = len(merged_achsen)
+                merged_achsen.append((titel, kanäle))
+        else:
+            merged_achsen.append((titel, kanäle))
+
+    final_achsen = merged_achsen
+
+    # --- Schritt 4: Kanal → yaxis Zuordnung ---
+    kanal_zu_yaxis: dict[str, str] = {}
+    for i, (_, kanäle) in enumerate(final_achsen):
+        ys = 'y' if i == 0 else f'y{i + 1}'
+        for n in kanäle:
+            kanal_zu_yaxis[n] = ys
+    for n in kanal_namen:
+        if n not in kanal_zu_yaxis:
+            kanal_zu_yaxis[n] = 'y'
+
+    n_sig = len(final_achsen)
     v_yaxis = f'y{n_sig + 1}'
     a_yaxis = f'y{n_sig + 2}'
 
-    # Erste Kanalfarbe je Einheit ermitteln
-    einheit_farbe: dict[str, str] = {}
-    if kanal_farbe_map:
-        for n in kanal_namen:
-            e = kanal_einheit_map.get(n, 'µm')
-            if e not in einheit_farbe:
-                einheit_farbe[e] = kanal_farbe_map.get(n, '#444444')
-
-    def _achsfarbe(einheit: str) -> dict:
-        farbe = einheit_farbe.get(einheit)
-        if not farbe:
-            return {}
-        return dict(color=farbe)
-
-    def _rng(e: str) -> list | None:
-        lo = float(st.session_state.get(einheit_ss_key_min(e), 0))
-        hi = float(st.session_state.get(einheit_ss_key_max(e), 0))
-        if lo != 0 or hi != 0:
-            return [lo, hi]
-        if y_ranges_fallback and e in y_ranges_fallback:
-            return y_ranges_fallback[e]
-        return None
-
-    # Rechte Achsen in Anzeigereihenfolge (innerst → äußerst)
+    # Rechte Signal-Achsen
     rechte_achsen: list[tuple[str, str, list | None, dict]] = []
-    for i, e in enumerate(unique_einheiten[1:], 1):
-        rechte_achsen.append((f'yaxis{i + 1}', e, _rng(e), _achsfarbe(e)))
+    for i, (titel, kanäle) in enumerate(final_achsen[1:], 1):
+        rechte_achsen.append((f'yaxis{i + 1}', titel, _rng(titel, kanäle), _achsfarbe(kanäle)))
     if show_velocity and velocity_ok:
         v_lo = float(st.session_state.get('v_axis_min', 0))
         v_hi = float(st.session_state.get('v_axis_max', 0))
         v_rng = [v_lo, v_hi] if not (v_lo == 0 and v_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 1}', f'D ({v_einheit})', v_rng,
-                              dict(color=FARBE_D)))
+        rechte_achsen.append((f'yaxis{n_sig + 1}', f'D ({v_einheit})', v_rng, dict(color=FARBE_D)))
     if show_acceleration and acceleration_ok:
         a_lo = float(st.session_state.get('a_axis_min', 0))
         a_hi = float(st.session_state.get('a_axis_max', 0))
         a_rng = [a_lo, a_hi] if not (a_lo == 0 and a_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng,
-                              dict(color=FARBE_D2)))
+        rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng, dict(color=FARBE_D2)))
 
     n_right = len(rechte_achsen)
     x_domain_end = max(0.5, 1.0 - STEP * max(0, n_right - 1)) if n_right > 1 else 1.0
 
     # Primäre linke Achse
-    e0   = unique_einheiten[0]
-    rng0 = _rng(e0)
+    titel0, kanäle0 = final_achsen[0] if final_achsen else ('µm', [])
+    rng0 = _rng(titel0, kanäle0) if final_achsen else None
     layout_yachsen: dict = {
-        'yaxis': dict(title=e0, range=rng0 if rng0 else y_range_primaer,
-                      **_achsfarbe(e0))
+        'yaxis': dict(title=titel0, range=rng0 if rng0 else y_range_primaer,
+                      **_achsfarbe(kanäle0))
     }
 
-    # Rechte Achsen: Position von innen nach außen
     for idx, (yk, title, rng, farb_dict) in enumerate(rechte_achsen):
         pos = (x_domain_end + STEP * idx) if n_right > 1 else 1.0
         ax: dict = dict(title=title, overlaying='y', side='right', showgrid=False,
@@ -275,7 +342,7 @@ def _yachsen_layout(
             ax['range'] = rng
         layout_yachsen[yk] = ax
 
-    return einheit_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end
+    return kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +357,16 @@ def load_rohdaten(
     max_samples: int,
     kanal_namen: tuple[str, ...],
     kanal_skalierung: tuple[float, ...] = (),
-) -> pd.DataFrame:
-    """Gecachter Wrapper um reader.load_raw – wird nur bei Dateiänderung neu ausgeführt."""
+) -> tuple[pd.DataFrame, float]:
+    """Gecachter Wrapper um reader.load_raw – wird nur bei Dateiänderung neu ausgeführt.
+    Gibt (DataFrame, hz_faktor) zurück."""
     return reader.load_raw(file_bytes, file_type, skip_rows, max_samples, kanal_namen, kanal_skalierung)
+
+
+@st.cache_data
+def _detect_kanal_count_cached(file_bytes: bytes, file_type: str, skip_rows: int = 0) -> int:
+    """Gecachter Wrapper um reader.detect_kanal_count."""
+    return reader.detect_kanal_count(file_bytes, file_type, skip_rows)
 
 
 @st.cache_data
@@ -366,16 +440,24 @@ def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
 # ---------------------------------------------------------------------------
 
 def update_xa_from_slider():
-    st.session_state.xa = max(0.0, float(st.session_state.xa_sw))
+    val = max(0.0, float(st.session_state.xa_sw))
+    st.session_state.xa    = val
+    st.session_state.xa_nw = val   # Zahlenfeld synchron halten
 
 def update_xa_from_num():
-    st.session_state.xa = max(0.0, float(st.session_state.xa_nw))
+    val = max(0.0, float(st.session_state.xa_nw))
+    st.session_state.xa    = val
+    st.session_state.xa_sw = val   # Slider synchron halten
 
 def update_xb_from_slider():
-    st.session_state.xb = max(0.0, float(st.session_state.xb_sw))
+    val = max(0.0, float(st.session_state.xb_sw))
+    st.session_state.xb    = val
+    st.session_state.xb_nw = val
 
 def update_xb_from_num():
-    st.session_state.xb = max(0.0, float(st.session_state.xb_nw))
+    val = max(0.0, float(st.session_state.xb_nw))
+    st.session_state.xb    = val
+    st.session_state.xb_sw = val
 
 def _make_off_cb(i: int):
     def _cb(): st.session_state[f'off{i}'] = st.session_state[f'off{i}_slider']
@@ -414,12 +496,18 @@ _SUB_EXPANDER_KEYS = (
 
 
 def _make_sub_expander_cb(this_key: str):
-    """Akkordeon-Callback: öffnet der Nutzer diesen Expander, werden alle anderen geschlossen."""
+    """Akkordeon-Callback: öffnet der Nutzer diesen Expander, werden alle anderen geschlossen.
+    Beim Schließen von 'sub_kanaele' werden leere Kanalnamen automatisch belegt."""
     def _cb():
         if st.session_state.get(this_key, False):
             for _k in _SUB_EXPANDER_KEYS:
                 if _k != this_key:
                     st.session_state[_k] = False
+        if this_key == 'sub_kanaele' and not st.session_state.get('sub_kanaele', False):
+            _n = st.session_state.get('n_kanäle_datei', N_KANÄLE)
+            for _i in range(1, _n + 1):
+                if not st.session_state.get(f'ch{_i}_name', '').strip():
+                    st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
     return _cb
 
 _SUB_EXPANDER_CBS = {k: _make_sub_expander_cb(k) for k in _SUB_EXPANDER_KEYS}
@@ -490,9 +578,9 @@ def update_sample_rate_for_file_type():
 # HILFSFUNKTIONEN – INDEX UND GESCHWINDIGKEIT
 # ---------------------------------------------------------------------------
 
-def get_idx_at_x(x_ms: float, sample_rate: float, max_idx: int) -> int:
-    """Wandelt Zeitwert (ms) in DataFrame-Index um. O(1)."""
-    return int(np.clip(round(x_ms / 1000.0 * sample_rate), 0, max_idx))
+def get_idx_at_x(x: float, sample_rate: float, max_idx: int, hz_faktor: float = 1000.0) -> int:
+    """Wandelt Zeitwert (in Anzeigeeinheit) in DataFrame-Index um. O(1)."""
+    return int(np.clip(round(x / hz_faktor * sample_rate), 0, max_idx))
 
 
 def _berechne_ableitungen_fuer_diagramm(
@@ -502,6 +590,7 @@ def _berechne_ableitungen_fuer_diagramm(
     show_acceleration: bool,
     v_faktor: float = 1e-3,
     a_faktor: float = 1e-6,
+    hz_faktor: float = 1000.0,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Berechnet D (1. Ableitung) und D2 (2. Ableitung) für die Diagramm-Darstellung.
 
@@ -512,7 +601,7 @@ def _berechne_ableitungen_fuer_diagramm(
         return None, None
 
     arr  = df_quelle[sensor].values
-    dt_s = (df_quelle['Zeit (ms)'].iloc[1] - df_quelle['Zeit (ms)'].iloc[0]) / 1000.0
+    dt_s = (df_quelle['Zeit (ms)'].iloc[1] - df_quelle['Zeit (ms)'].iloc[0]) / hz_faktor
 
     velocity = None
     if show_velocity:
@@ -650,6 +739,8 @@ def build_chart_png(
     sop_linien=None,
     kanal_einheit_map: dict | None = None,
     alle_sensor_namen: list[str] | None = None,
+    hz_faktor: float = 1000.0,
+    zeit_einheit: str = 'ms',
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -669,7 +760,7 @@ def build_chart_png(
     velocity = acceleration = None
     if len(df) > 1:
         arr  = df[active_sensor].values
-        dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / 1000.0
+        dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / hz_faktor
         if show_velocity:
             roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
             velocity = roh * v_faktor_e if roh is not None else None
@@ -682,13 +773,17 @@ def build_chart_png(
     _alle_e = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
     _kanal_farbe_e = {name: KANAL_FARBEN[_alle_e.index(name) if name in _alle_e else 0]
                      for name in sensor_namen}
-    einheit_zu_yaxis_e, layout_yachsen_e, v_yaxis_e, a_yaxis_e, x_domain_end_e = _yachsen_layout(
+    _kanal_bereiche_e: dict[str, tuple[float, float]] = {
+        n: (float(df[n].min()), float(df[n].max())) for n in sensor_namen if n in df.columns
+    }
+    kanal_zu_yaxis_e, layout_yachsen_e, v_yaxis_e, a_yaxis_e, x_domain_end_e = _yachsen_layout(
         sensor_namen, kanal_einheit_map, y_range_e,
         show_velocity, velocity_ok_e, show_acceleration, acceleration_ok_e,
         v_einheit=v_einheit_e, a_einheit=a_einheit_e,
         kanal_farbe_map=_kanal_farbe_e,
+        kanal_bereiche=_kanal_bereiche_e,
     )
-    active_yaxis_e = einheit_zu_yaxis_e.get(kanal_einheit_map.get(active_sensor, 'µm'), 'y')
+    active_yaxis_e = kanal_zu_yaxis_e.get(active_sensor, 'y')
 
     export_fig = go.Figure()
 
@@ -698,7 +793,7 @@ def build_chart_png(
         export_fig.add_trace(go.Scatter(
             x=df['Zeit (ms)'], y=df[name],
             name=name, line=dict(color=KANAL_FARBEN[_ci]),
-            yaxis=einheit_zu_yaxis_e.get(kanal_einheit_map.get(name, 'µm'), 'y'),
+            yaxis=kanal_zu_yaxis_e.get(name, 'y'),
         ))
 
     export_fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
@@ -777,7 +872,7 @@ def build_chart_png(
         ))
 
     export_fig.update_layout(
-        xaxis_title="Zeit (ms)",
+        xaxis_title=f"Zeit ({zeit_einheit})",
         height=500,
         hovermode="x unified",
         legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
@@ -887,6 +982,11 @@ st.sidebar.header("1. Import")
 st.sidebar.caption(f"Version: {VERSION}")
 
 file_type = st.session_state.get('file_type_radio', 'CSV plain')
+# Zeiteinheit früh aus Session-State lesen – wird in der gesamten Sidebar benötigt
+_zhf          = st.session_state.get('zeit_hz_faktor', 1000.0)
+_ZEIT_EINHEIT_MAP = {1.0: 's', 1e3: 'ms', 1e6: 'µs', 1e9: 'ns'}
+_zeit_einheit = _ZEIT_EINHEIT_MAP.get(_zhf, 'ms')
+
 if file_type == "Hubmessung":
     file_extensions = ["txt"]
 else:
@@ -945,13 +1045,25 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
+    # Kanalanzahl aus Datei erkennen (gecacht) – steuert wie viele Felder der Expander zeigt
+    _n_show = N_KANÄLE
+    if uploaded_file:
+        try:
+            _n_show = min(N_KANÄLE, max(1, _detect_kanal_count_cached(
+                uploaded_file.getvalue(), file_type,
+                st.session_state.get('skip_rows', 12),
+            )))
+        except Exception:
+            pass
+        st.session_state['n_kanäle_datei'] = _n_show
+
     with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele", on_change=_SUB_EXPANDER_CBS['sub_kanaele']):
-        st.caption("Leeres Feld = Kanal nicht einlesen")
+        st.caption("Leer: wird beim Schließen automatisch als 'Kanal N' benannt.")
         # Für Oszilloskop: Einheiten aus Datei-Header vorlesen
         _osc_einheiten: list[str] = []
         if file_type == "Oszilloskop CSV" and uploaded_file:
             _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
-        for _ki in range(N_KANÄLE):
+        for _ki in range(_n_show):
             _i         = _ki + 1
             _ch_key    = f'ch{_i}_name'
             _einh_key  = f'ch{_i}_einheit'
@@ -993,19 +1105,21 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         )
 
         try:
-            df_raw = load_rohdaten(
+            df_raw, _hz_f = load_rohdaten(
                 file_bytes, file_type, st.session_state.skip_rows,
                 st.session_state.max_samples, kanal_namen_tuple, _osc_skale_tuple,
             )
+            st.session_state['zeit_hz_faktor'] = _hz_f
         except ValueError as e:
             st.error(f"Fehler beim Laden: {e}")
             st.stop()
 
         if st.session_state.last_file_name != uploaded_file.name:
+            _hz_f_init = st.session_state.get('zeit_hz_faktor', 1000.0)
             if file_type in ("Hubmessung", "Oszilloskop CSV"):
                 total_time_ms = float(df_raw['Zeit (ms)'].iloc[-1])
             else:
-                total_time_ms = len(df_raw) / sample_rate * 1000.0
+                total_time_ms = len(df_raw) / sample_rate * _hz_f_init
             for i, name in enumerate(sensor_namen, 1):
                 off_init = float(df_raw[name].min()) * -1.0
                 st.session_state[f'off{i}']        = off_init
@@ -1013,8 +1127,16 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
                 st.session_state[f'off{i}']        = 0.0
                 st.session_state[f'off{i}_slider'] = 0.0
-            st.session_state.xa             = total_time_ms * 0.30
-            st.session_state.xb             = total_time_ms * 0.50
+            # Überzählige Kanalnamen leeren (neue Datei hat evtl. weniger Kanäle)
+            _n_d = st.session_state.get('n_kanäle_datei', N_KANÄLE)
+            for _i in range(_n_d + 1, N_KANÄLE + 1):
+                st.session_state[f'ch{_i}_name'] = ''
+            st.session_state.xa    = total_time_ms * 0.30
+            st.session_state.xa_sw = total_time_ms * 0.30
+            st.session_state.xa_nw = total_time_ms * 0.30
+            st.session_state.xb    = total_time_ms * 0.50
+            st.session_state.xb_sw = total_time_ms * 0.50
+            st.session_state.xb_nw = total_time_ms * 0.50
             st.session_state.crop_start     = None
             st.session_state.crop_end       = None
             st.session_state.zoom_token    += 1
@@ -1046,20 +1168,28 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
             st.markdown("")
             for i, name in enumerate(sensor_namen):
+                _raw_col  = df_raw[name]
+                _off_lim  = max(600.0,
+                                abs(float(_raw_col.min())) * 1.5,
+                                abs(float(_raw_col.max())) * 1.5)
+                _off_lim  = float(np.ceil(_off_lim / 100) * 100)
+                _off_step = (0.1  if _off_lim <=   600 else
+                             1.0  if _off_lim <=  6000 else
+                             10.0 if _off_lim <= 60000 else 100.0)
                 st.slider(
-                    name, -600.0, 600.0, step=0.1,
+                    name, -_off_lim, _off_lim, step=_off_step,
                     key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
-                    help="Y-Versatz für diesen Kanal (Bereich ±600).",
+                    help=f"Y-Versatz für diesen Kanal (Bereich ±{_off_lim:.0f}).",
                 )
 
     with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset", on_change=_SUB_EXPANDER_CBS['sub_xoffset']):
         if uploaded_file and sensor_namen:
             for _xi, _xname in enumerate(sensor_namen):
                 st.number_input(
-                    f"X-Offset {_xname} (ms)",
+                    f"X-Offset {_xname} ({_zeit_einheit})",
                     step=0.1, format="%.3f",
                     key=f'x_off{_xi+1}',
-                    help="Zeitversatz in ms – verschiebt diesen Kanal nach links (−) oder rechts (+).",
+                    help=f"Zeitversatz in {_zeit_einheit} – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
 
     # Aktive Einheiten aus konfigurierten Kanälen bestimmen
@@ -1150,10 +1280,11 @@ osc_skale_tuple = tuple(
 )
 
 try:
-    df_raw = load_rohdaten(
+    df_raw, _hz_faktor = load_rohdaten(
         file_bytes, file_type, st.session_state.skip_rows,
         st.session_state.max_samples, kanal_namen_tuple, osc_skale_tuple,
     )
+    st.session_state['zeit_hz_faktor'] = _hz_faktor
 except ValueError as e:
     st.error(f"Fehler beim Laden: {e}")
     st.stop()
@@ -1167,8 +1298,13 @@ sensor_namen = list(kanal_namen_tuple)   # tatsächlich geladene Kanalnamen
 # Offsets für alle aktiven Kanäle auslesen
 offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
 
+_zhf = st.session_state.get('zeit_hz_faktor', 1000.0)   # s → Anzeigeeinheit
+_ZEIT_EINHEIT_MAP = {1.0: 's', 1e3: 'ms', 1e6: 'µs', 1e9: 'ns'}
+_zeit_einheit = _ZEIT_EINHEIT_MAP.get(_zhf, 'ms')
+
 df_full, sample_rate = reader.build_display_df(
-    df_raw, file_type, sample_rate, kanal_namen_tuple, offs
+    df_raw, file_type, sample_rate, kanal_namen_tuple, offs,
+    zeit_hz_faktor=_zhf,
 )
 
 # ---------------------------------------------------------------------------
@@ -1207,8 +1343,12 @@ if st.session_state.last_file_name != uploaded_file.name:
         st.session_state[f'off{i}_slider'] = 0.0
     for i in range(1, N_KANÄLE + 1):
         st.session_state[f'x_off{i}'] = 0.0
-    st.session_state.xa             = total_time_ms * 0.30
-    st.session_state.xb             = total_time_ms * 0.50
+    st.session_state.xa    = total_time_ms * 0.30
+    st.session_state.xa_sw = total_time_ms * 0.30
+    st.session_state.xa_nw = total_time_ms * 0.30
+    st.session_state.xb    = total_time_ms * 0.50
+    st.session_state.xb_sw = total_time_ms * 0.50
+    st.session_state.xb_nw = total_time_ms * 0.50
     st.session_state.crop_start     = None
     st.session_state.crop_end       = None
     st.session_state.zoom_token    += 1
@@ -1227,8 +1367,8 @@ crop_active = (
     and st.session_state.crop_end is not None
 )
 if crop_active:
-    ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full)
-    ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full)
+    ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _zhf)
+    ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _zhf)
     df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
     min_zeit = float(df['Zeit (ms)'].iloc[0])
     max_zeit = float(df['Zeit (ms)'].iloc[-1])
@@ -1269,24 +1409,36 @@ sichtbare_sensor_namen = [
 _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
 v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit)
 
-# Cursor-Werte auf aktiven Zeitbereich begrenzen
+# Cursor-Werte auf aktiven Zeitbereich begrenzen.
+# Alle drei gebundenen Keys (xa, xa_sw, xa_nw) werden synchronisiert damit
+# Slider und Zahlenfeld nie voneinander abweichen.
 xa = float(np.clip(st.session_state.xa, min_zeit, max_zeit))
 xb = float(np.clip(st.session_state.xb, min_zeit, max_zeit))
-st.session_state.xa = xa
-st.session_state.xb = xb
+if (xa != st.session_state.xa
+        or xa != st.session_state.get('xa_sw', xa)
+        or xa != st.session_state.get('xa_nw', xa)):
+    st.session_state.xa    = xa
+    st.session_state.xa_sw = xa
+    st.session_state.xa_nw = xa
+if (xb != st.session_state.xb
+        or xb != st.session_state.get('xb_sw', xb)
+        or xb != st.session_state.get('xb_nw', xb)):
+    st.session_state.xb    = xb
+    st.session_state.xb_sw = xb
+    st.session_state.xb_nw = xb
 
 with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     st.number_input(
-        "Zeit XA (ms)", min_zeit, max_zeit,
+        f"Zeit XA ({_zeit_einheit})", min_zeit, max_zeit,
         value=xa, step=0.001, format="%.3f",
         key="xa_nw", on_change=update_xa_from_num,
-        help="Linker Zeitcursor in ms – Startpunkt für Δt, Δs und D (A-B).",
+        help=f"Linker Zeitcursor ({_zeit_einheit}) – Startpunkt für Δt, Δs und D (A-B).",
     )
     st.number_input(
-        "Zeit XB (ms)", min_zeit, max_zeit,
+        f"Zeit XB ({_zeit_einheit})", min_zeit, max_zeit,
         value=xb, step=0.001, format="%.3f",
         key="xb_nw", on_change=update_xb_from_num,
-        help="Rechter Zeitcursor in ms – Endpunkt für Δt, Δs und D (A-B).",
+        help=f"Rechter Zeitcursor ({_zeit_einheit}) – Endpunkt für Δt, Δs und D (A-B).",
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
@@ -1349,19 +1501,19 @@ rect_fit = compute_best_fit_rectangle(
 
 # Indizes der Cursor-Positionen im (ggf. gecropten) DataFrame
 if crop_active:
-    idx_a = get_idx_at_x(xa - min_zeit, sample_rate, max_idx)
-    idx_b = get_idx_at_x(xb - min_zeit, sample_rate, max_idx)
+    idx_a = get_idx_at_x(xa - min_zeit, sample_rate, max_idx, _zhf)
+    idx_b = get_idx_at_x(xb - min_zeit, sample_rate, max_idx, _zhf)
 else:
-    idx_a = get_idx_at_x(xa, sample_rate, max_idx)
-    idx_b = get_idx_at_x(xb, sample_rate, max_idx)
+    idx_a = get_idx_at_x(xa, sample_rate, max_idx, _zhf)
+    idx_b = get_idx_at_x(xb, sample_rate, max_idx, _zhf)
 
 ya = df.loc[idx_a, active_sensor]
 yb = df.loc[idx_b, active_sensor]
 
-dt_val_ms = abs(xb - xa)                                                    # ms
+dt_val_ms = abs(xb - xa)                                                    # Anzeigeeinheit
 dy        = abs(yb - ya)                                                    # [aktiv_einheit]
-# v_avg: dy/dt_ms in [einheit/ms] → × 1000 × v_faktor → Anzeigeeinheit
-v_avg     = dy / dt_val_ms * 1000.0 * v_faktor if dt_val_ms > 0 else 0.0
+# v_avg: dy/dt in [einheit/Anzeigeeinheit] → × hz_faktor → Anzeigeeinheit/s → × v_faktor
+v_avg     = dy / dt_val_ms * _zhf * v_faktor if dt_val_ms > 0 else 0.0
 
 # Momentan-D an XA und XB über ein Zeitbasis-Fenster
 halbes_zeitfenster = max(1, int(v_time_base_ms / 1000.0 * sample_rate / 2))
@@ -1474,7 +1626,7 @@ else:
 
 velocity, acceleration = _berechne_ableitungen_fuer_diagramm(
     df_plot, active_sensor, show_velocity, show_acceleration,
-    v_faktor=v_faktor, a_faktor=a_faktor,
+    v_faktor=v_faktor, a_faktor=a_faktor, hz_faktor=_zhf,
 )
 
 # ---------------------------------------------------------------------------
@@ -1506,17 +1658,24 @@ for _e in set(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen):
         _span_e = _hi_e - _lo_e
         _yrange_fallback[_e] = [_lo_e, _hi_e + _span_e * 0.15]
 
+# Per-Kanal-Bereiche für automatische Achsen-Aufteilung (SPLIT_FAKTOR)
+_kanal_bereiche: dict[str, tuple[float, float]] = {}
+for _n in sichtbare_sensor_namen:
+    if _n in df_use.columns:
+        _kanal_bereiche[_n] = (float(df_use[_n].min()), float(df_use[_n].max()))
+
 velocity_ok     = velocity is not None
 acceleration_ok = acceleration is not None
 _kanal_farbe_map = {name: KANAL_FARBEN[sensor_namen.index(name)] for name in sichtbare_sensor_namen}
-einheit_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
+kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
     sichtbare_sensor_namen, kanal_einheit_map, y_range_plot,
     show_velocity, velocity_ok, show_acceleration, acceleration_ok,
     v_einheit=v_einheit, a_einheit=a_einheit,
     kanal_farbe_map=_kanal_farbe_map,
     y_ranges_fallback=_yrange_fallback,
+    kanal_bereiche=_kanal_bereiche,
 )
-active_yaxis = einheit_zu_yaxis.get(kanal_einheit_map.get(active_sensor, 'µm'), 'y')
+active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
 fig = go.Figure()
 
@@ -1525,7 +1684,7 @@ for name in sichtbare_sensor_namen:
     fig.add_trace(go.Scatter(
         x=df_plot['Zeit (ms)'], y=df_plot[name],
         name=name, line=dict(color=KANAL_FARBEN[_ci]),
-        yaxis=einheit_zu_yaxis.get(kanal_einheit_map.get(name, 'µm'), 'y'),
+        yaxis=kanal_zu_yaxis.get(name, 'y'),
     ))
 
 fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
@@ -1603,14 +1762,16 @@ _y_lim_keys = (
     + [einheit_ss_key_min(e) for e in EINHEIT_ALLE]
     + [einheit_ss_key_max(e) for e in EINHEIT_ALLE]
 )
-_y_lim_token = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
+_y_lim_token  = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
+# Achsen-Struktur-Token: erzwingt Plotly-Reset wenn sich Kanal↔Achse-Zuordnung ändert
+_axis_token   = hash(tuple(sorted(kanal_zu_yaxis.items())))
 
 fig.update_layout(
-    xaxis_title="Zeit (ms)",
+    xaxis_title=f"Zeit ({_zeit_einheit})",
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end]),
     **layout_yachsen,
 )
@@ -1625,15 +1786,15 @@ c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
     st.slider(
         "XA", min_zeit, max_zeit, value=xa,
-        key="xa_sw", step=0.001, format="%.3f ms",
+        key="xa_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xa_from_slider, label_visibility="collapsed",
-        help="Linker Cursor XA (ms) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
+        help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
     )
     st.slider(
         "XB", min_zeit, max_zeit, value=xb,
-        key="xb_sw", step=0.001, format="%.3f ms",
+        key="xb_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xb_from_slider, label_visibility="collapsed",
-        help="Rechter Cursor XB (ms) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
+        help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
     )
 
 # ---------------------------------------------------------------------------
@@ -1648,10 +1809,16 @@ btn_col1, btn_col2 = st.columns(2)
 with btn_col1:
     if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
-        st.session_state.crop_start  = crop_t0
-        st.session_state.crop_end    = crop_t1
-        st.session_state.xa          = float(min(xa, xb))
-        st.session_state.xb          = float(max(xa, xb))
+        st.session_state.crop_start = crop_t0
+        st.session_state.crop_end   = crop_t1
+        _xa_new = float(min(xa, xb))
+        _xb_new = float(max(xa, xb))
+        st.session_state.xa    = _xa_new
+        st.session_state.xa_sw = _xa_new
+        st.session_state.xa_nw = _xa_new
+        st.session_state.xb    = _xb_new
+        st.session_state.xb_sw = _xb_new
+        st.session_state.xb_nw = _xb_new
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
@@ -1664,15 +1831,15 @@ with btn_col2:
 
 if crop_active:
     st.caption(
-        f"✂️ Crop aktiv: {st.session_state.crop_start:.3f} ms – "
-        f"{st.session_state.crop_end:.3f} ms"
+        f"✂️ Crop aktiv: {st.session_state.crop_start:.3f} {_zeit_einheit} – "
+        f"{st.session_state.crop_end:.3f} {_zeit_einheit}"
     )
 
 # ---------------------------------------------------------------------------
 # KENNGRÖSSEN-ANZEIGE
 # ---------------------------------------------------------------------------
 
-freq_hz = (1000.0 / dt_val_ms) if dt_val_ms > 0 else float('nan')
+freq_hz = (_zhf / dt_val_ms) if dt_val_ms > 0 else float('nan')
 hub     = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
 
 # Zeile 1 – Zeit & Signal
@@ -1739,6 +1906,8 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 sop_linien=sop_linien,
                 kanal_einheit_map=kanal_einheit_map,
                 alle_sensor_namen=sensor_namen,
+                hz_faktor=_zhf,
+                zeit_einheit=_zeit_einheit,
             )
             stem = uploaded_file.name.rsplit('.', 1)[0]
             if export_format == "PDF":
