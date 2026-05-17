@@ -29,19 +29,30 @@ Python 3.11 required. Key packages: streamlit, pandas, plotly, kaleido, scipy, r
 
 ## Architecture
 
-All logic lives in a single file: `app.py` (~1300 lines). There are no modules, tests, or build steps.
+Three source files — no build steps, no tests:
+
+| File | Lines | Inhalt |
+|---|---|---|
+| `app.py` | ~1450 | Streamlit UI, Session State, Callbacks, Hauptfluss |
+| `chart.py` | ~600 | Plotly-Chart-Aufbau, PNG-Export (Kaleido), PDF-Export (ReportLab), Y-Achsen-Layout |
+| `reader.py` | ~420 | CSV-Parsing, SG-Filter-Ableitung |
 
 **Data flow:**
 1. User uploads a CSV file in the sidebar
-2. `load_csv` (cached) parses it — supports two formats: raw numeric columns or header-based
-3. `build_time_axis` constructs the time vector from sample rate settings
-4. `apply_offsets` applies Y-axis corrections
-5. Velocity and acceleration are derived via Savitzky-Golay filter (scipy)
-6. `compute_best_fit_rectangle` detects rectangular pulse shapes for hub analysis
-7. `_finde_sop_kreuzungen` finds the Speed-on-Point crossing on the rising edge
+2. `load_rohdaten` (cached) parses it via `reader.load_raw`
+3. Y-Offsets and X-Offsets are applied from session state
+4. Velocity and acceleration are derived via Savitzky-Golay filter (`reader.berechne_sg_ableitung`)
+5. `compute_best_fit_rectangle` detects rectangular pulse shapes for hub analysis
+6. `chart._finde_sop_kreuzungen` finds the Speed-on-Point crossing on the rising edge
+7. `chart._yachsen_layout` assigns Plotly y-axes (merges same-unit channels, splits by SPLIT_FAKTOR or manual limits)
 8. Plotly renders an interactive multi-axis chart (displacement / velocity / acceleration)
 9. Metrics are displayed in a 3-row card grid (Zeit/Weg, Geschwindigkeit, Beschleunigung)
-10. PDF export uses ReportLab; PNG export uses Kaleido (pinned to 0.2.1)
+10. `chart.build_chart_png` renders PNG via Kaleido; `chart.build_pdf` builds A4-landscape PDF via ReportLab
+
+**Key constants in `chart.py`** (imported into app.py):
+- `KANAL_FARBEN`, `FARBE_*` — all diagram colors
+- `SPLIT_FAKTOR = 15.0` — threshold for splitting same-unit channels onto separate axes
+- `_ZEIT_TO_S` — unit-to-seconds conversion dict
 
 ## Streamlit Session State Pattern
 
@@ -58,4 +69,4 @@ All user-facing text, variable names, and code comments are in **German**. Keep 
 
 ## Version
 
-Tracked as `VERSION = "v1.00.05"` at the top of `app.py`. Update this string when making notable changes.
+Tracked as `VERSION = "v1.00.15"` at the top of `app.py`. Update this string when making notable changes.
