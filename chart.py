@@ -218,7 +218,7 @@ def _yachsen_layout(
         rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng, dict(color=FARBE_D2)))
 
     n_right = len(rechte_achsen)
-    x_domain_end = max(0.5, 1.0 - STEP * max(0, n_right - 1)) if n_right > 1 else 1.0
+    x_domain_end = max(0.5, 1.0 - STEP * n_right) if n_right >= 1 else 1.0
 
     # Primäre linke Achse
     titel0, kanäle0 = final_achsen[0] if final_achsen else ('µm', [])
@@ -229,7 +229,7 @@ def _yachsen_layout(
     }
 
     for idx, (yk, title, rng, farb_dict) in enumerate(rechte_achsen):
-        pos = (x_domain_end + STEP * idx) if n_right > 1 else 1.0
+        pos = x_domain_end + STEP * idx
         ax: dict = dict(title=title, overlaying='y', side='right', showgrid=False,
                         position=pos, anchor='free', **farb_dict)
         if rng:
