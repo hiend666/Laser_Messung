@@ -1307,10 +1307,16 @@ st.plotly_chart(fig, width="stretch", key="main_chart")
 
 # ---------------------------------------------------------------------------
 # CURSOR-SLIDER
-# 0.04-Spalte gleicht Y-Achsen-Breite aus damit Slider mit Diagramm fluchten
+# Linke Spalte (0.04): gleicht Y-Achsen-Breite links aus
+# Rechte Spalte (1 - x_domain_end): gleicht rechte Y-Achsen aus
+# Beide sorgen dafür dass die Slider bündig mit dem Diagramm-Plotbereich laufen
 # ---------------------------------------------------------------------------
 
-c_pad, c_slider = st.columns([0.04, 0.96])
+_slider_right_pad = round(1.0 - x_domain_end, 4)
+if _slider_right_pad > 0.01:
+    c_pad, c_slider, _ = st.columns([0.04, x_domain_end - 0.04, _slider_right_pad])
+else:
+    c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
     st.slider(
         "XA", min_zeit, max_zeit,
