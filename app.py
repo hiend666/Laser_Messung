@@ -588,9 +588,11 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     if uploaded_file:
         _kanal_cfg = [st.session_state.get(f'ch{i}_name', '').strip() for i in range(1, N_KANÄLE + 1)]
-        kanal_namen_tuple = tuple(n for n in _kanal_cfg if n)
+        # Nur die ersten _n_show Kanäle verwenden – verhindert, dass alte Namen aus
+        # früheren Dateien mit mehr Kanälen mitgeschleppt werden.
+        kanal_namen_tuple = tuple(n for n in _kanal_cfg[:_n_show] if n)
         # Kanalname → 1-basierte Kanal-Nummer (für show_chN Keys)
-        _sensor_ch_num = {name: i + 1 for i, name in enumerate(_kanal_cfg) if name}
+        _sensor_ch_num = {name: i + 1 for i, name in enumerate(_kanal_cfg[:_n_show]) if name}
 
         if len(kanal_namen_tuple) < 1:
             st.sidebar.error("Mindestens ein Kanalname muss angegeben werden.")

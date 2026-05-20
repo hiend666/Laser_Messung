@@ -226,11 +226,13 @@ def read_hubmessung_txt(
     time_col    = df.columns[0]
     sensor_cols = df.columns[1:]
 
-    if len(sensor_cols) < n_kanäle:
-        raise ValueError(
-            f"TXT-Datei enthält nur {len(sensor_cols)} Sensordaten-Spalten, "
-            f"aber {n_kanäle} Kanäle konfiguriert."
-        )
+    if len(sensor_cols) == 0:
+        raise ValueError("TXT-Datei enthält keine Sensordaten-Spalten.")
+
+    # Mehr Kanäle konfiguriert als in der Datei vorhanden → auf Verfügbares kappen
+    if n_kanäle > len(sensor_cols):
+        kanal_namen = kanal_namen[:len(sensor_cols)]
+        n_kanäle    = len(kanal_namen)
 
     result_df = pd.DataFrame()
     result_df['Zeit (ms)'] = df[time_col].values
