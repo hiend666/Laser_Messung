@@ -17,7 +17,6 @@ import reader
 from chart import (
     KANAL_FARBEN, FARBE_D, FARBE_D2, FARBE_V_SCHNITT,
     FARBE_VMAX, FARBE_AMAX, FARBE_CURSOR,
-    Y_PUFFER, STEP,
     _ZEIT_TO_S, _ableit_info, _yachsen_layout,
     _zeichne_rechteck_fit, _zeichne_integral_flaeche, _finde_sop_kreuzungen,
     _baue_traces, build_chart_png, build_pdf,
@@ -31,6 +30,7 @@ VERSION = "v1.01.00"
 
 MAX_PLOT_PUNKTE = 5_000     # Downsampling-Schwelle für interaktives Diagramm
 N_KANÄLE        = 4         # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
+Y_PUFFER        = 0.15      # Y-Bereich-Puffer oben (15 %) – muss mit chart.Y_PUFFER übereinstimmen
 
 # Einheiten-Auswahl für Kanäle
 EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
@@ -1227,7 +1227,8 @@ fig.update_layout(
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
     uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}",
-    xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end]),
+    xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
+               showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
 )
 st.plotly_chart(fig, width="stretch", key="main_chart")
