@@ -620,9 +620,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 file_bytes, file_type, st.session_state.skip_rows,
                 st.session_state.max_samples, kanal_namen_tuple, _osc_skale_tuple,
             )
-            if file_type == "CSV plain" and sample_rate > 0:
-                _max_s = len(df_raw) / sample_rate
-                _hz_f_datei, _ = reader.wahl_zeiteinheit(_max_s)
             st.session_state['zeit_hz_faktor'] = _hz_f_datei
         except ValueError as e:
             st.error(f"Fehler beim Laden: {e}")
