@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.00"
+VERSION = "v1.01.01"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -620,6 +620,9 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 file_bytes, file_type, st.session_state.skip_rows,
                 st.session_state.max_samples, kanal_namen_tuple, _osc_skale_tuple,
             )
+            if file_type == "CSV plain" and sample_rate > 0:
+                _max_s = len(df_raw) / sample_rate
+                _hz_f_datei, _ = reader.wahl_zeiteinheit(_max_s)
             st.session_state['zeit_hz_faktor'] = _hz_f_datei
         except ValueError as e:
             st.error(f"Fehler beim Laden: {e}")
@@ -1226,7 +1229,7 @@ fig.update_layout(
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,

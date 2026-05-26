@@ -18,9 +18,9 @@ SAVGOL_POLYNOM = 3
 # ZEITACHSE
 # ===========================================================================
 
-def build_time_axis(n_samples: int, sr_hz: float) -> np.ndarray:
-    """Zeitvektor in ms für n_samples bei Abtastrate sr_hz (Hz)."""
-    return np.arange(n_samples) * (1000.0 / sr_hz)
+def build_time_axis(n_samples: int, sr_hz: float, hz_faktor: float = 1000.0) -> np.ndarray:
+    """Zeitvektor in der gewählten Einheit für n_samples bei Abtastrate sr_hz (Hz)."""
+    return np.arange(n_samples) * (hz_faktor / sr_hz)
 
 
 def wahl_zeiteinheit(max_s: float) -> tuple[float, str]:
@@ -416,7 +416,7 @@ def build_display_df(
             if dt > 0:
                 sample_rate_hz = zeit_hz_faktor / dt
     else:
-        zeit = build_time_axis(len(raw_df), sample_rate_hz)
+        zeit = build_time_axis(len(raw_df), sample_rate_hz, hz_faktor=zeit_hz_faktor)
 
     kanal_arrays = tuple(raw_df[name].values for name in kanal_namen)
     df_full = apply_offsets(kanal_namen, kanal_arrays, offsets, zeit)
