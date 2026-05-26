@@ -36,8 +36,10 @@ FARBE_D2        = 'orange'
 FARBE_V_SCHNITT = 'green'
 FARBE_VMAX      = 'red'
 FARBE_AMAX      = 'orange'
-FARBE_CURSOR    = 'red'
-FARBE_RECHTECK  = 'lime'
+FARBE_CURSOR        = 'red'
+FARBE_RECHTECK      = 'lime'
+FARBE_INTEGRAL_POS  = 'rgba(0, 100, 200, 0.20)'   # blau – Bereich über der 0-Linie
+FARBE_INTEGRAL_NEG  = 'rgba(200, 50, 0, 0.20)'    # rot  – Bereich unter der 0-Linie
 
 _ZEIT_TO_S: dict[str, float] = {'s': 1.0, 'ms': 1e-3, 'µs': 1e-6, 'ns': 1e-9}
 
@@ -349,6 +351,49 @@ def _finde_sop_kreuzungen(
 
 
 # ---------------------------------------------------------------------------
+# INTEGRAL-FLÄCHE
+# ---------------------------------------------------------------------------
+
+def _zeichne_integral_flaeche(fig, x_vals, y_vals, yaxis: str = 'y') -> None:
+    """Zeichnet Integralfläche mit zwei Farben: blau über 0, rot unter 0.
+
+    Nulldurchgänge werden linear interpoliert, damit die Farbbereiche sauber trennen.
+    """
+    import numpy as np
+    x = np.asarray(x_vals, dtype=float)
+    y = np.asarray(y_vals, dtype=float)
+    if len(x) < 2:
+        return
+
+    # Nulldurchgänge interpolieren und in x/y einfügen
+    x_list, y_list = list(x), list(y)
+    inserts = []
+    for i in range(len(y) - 1):
+        if y[i] != y[i + 1] and (y[i] > 0) != (y[i + 1] > 0):
+            t = y[i] / (y[i] - y[i + 1])
+            inserts.append((i + 1, float(x[i] + t * (x[i + 1] - x[i]))))
+    for offset, (pos, x_c) in enumerate(inserts):
+        x_list.insert(pos + offset, x_c)
+        y_list.insert(pos + offset, 0.0)
+
+    xa = np.array(x_list)
+    ya = np.array(y_list)
+
+    fig.add_trace(go.Scatter(
+        x=xa, y=np.maximum(ya, 0.0),
+        fill='tozeroy', fillcolor=FARBE_INTEGRAL_POS,
+        line=dict(color='rgba(0,100,200,0.45)', width=1),
+        name='∫', yaxis=yaxis,
+    ))
+    fig.add_trace(go.Scatter(
+        x=xa, y=np.minimum(ya, 0.0),
+        fill='tozeroy', fillcolor=FARBE_INTEGRAL_NEG,
+        line=dict(color='rgba(200,50,0,0.45)', width=1),
+        name='∫⁻', yaxis=yaxis, showlegend=False,
+    ))
+
+
+# ---------------------------------------------------------------------------
 # EXPORT: DIAGRAMM ALS PNG
 # ---------------------------------------------------------------------------
 
@@ -369,6 +414,7 @@ def build_chart_png(
     hz_faktor: float = 1000.0,
     zeit_einheit: str = 'ms',
     kanal_ch_num: dict | None = None,
+    show_integral: bool = False,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -499,6 +545,15 @@ def build_chart_png(
             x=df['Zeit (ms)'], y=acceleration,
             name='D2', yaxis=a_yaxis_e, line=dict(color=FARBE_D2),
         ))
+    if show_integral:
+        _mask_e = (df['Zeit (ms)'] >= xa) & (df['Zeit (ms)'] <= xb)
+        _df_int_e = df[_mask_e]
+        if len(_df_int_e) > 0:
+            _zeichne_integral_flaeche(
+                export_fig,
+                _df_int_e['Zeit (ms)'].values, _df_int_e[active_sensor].values,
+                yaxis=active_yaxis_e,
+            )
 
     export_fig.update_layout(
         xaxis_title=f"Zeit ({zeit_einheit})",

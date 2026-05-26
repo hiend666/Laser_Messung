@@ -18,11 +18,11 @@ from chart import (
     KANAL_FARBEN, FARBE_D, FARBE_D2, FARBE_V_SCHNITT,
     FARBE_VMAX, FARBE_AMAX, FARBE_CURSOR,
     _ZEIT_TO_S, _ableit_info, _yachsen_layout,
-    _zeichne_rechteck_fit, _finde_sop_kreuzungen,
+    _zeichne_rechteck_fit, _zeichne_integral_flaeche, _finde_sop_kreuzungen,
     build_chart_png, build_pdf,
 )
 
-VERSION = "v1.00.15"
+VERSION = "v1.00.16"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -101,6 +101,7 @@ defaults = {
     'window_length_accel': 40,
     'show_sop': False,
     'sop_percent': 80,
+    'show_integral': False,
     'v_axis_min': -3_200,
     'v_axis_max':  3_200,
     'a_axis_min': -20_000,
@@ -148,6 +149,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_velocity', 'window_length',
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
+    'show_integral',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
 ]
 for _i in range(1, N_KANÄLE + 1):
@@ -323,6 +325,23 @@ def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
         return f"{value:.{prec}f} {einheit}"
     # Zu viele Vor- oder Nachkommastellen → Wissenschaftliche Notation
     return f"{value:.{prec}e} {einheit}"
+
+
+def _fmt_integral(value_raw: float, aktiv_einheit: str, zeit_einheit: str) -> str:
+    """Formatiert Integralwert (aktiv_einheit × zeit_einheit) mit auto-skalierter Zeiteinheit."""
+    if np.isnan(value_raw):
+        return "N/A"
+    val_si = value_raw * _ZEIT_TO_S.get(zeit_einheit, 1e-3)   # → aktiv_einheit × s
+    if val_si == 0:
+        return f"0.000 {aktiv_einheit}·s"
+    abs_si = abs(val_si)
+    for unit in ('s', 'ms', 'µs', 'ns'):
+        scaled = abs_si / _ZEIT_TO_S[unit]
+        if scaled >= 0.001:
+            prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
+            return f"{val_si / _ZEIT_TO_S[unit]:{prec}} {aktiv_einheit}·{unit}"
+    return f"{val_si / _ZEIT_TO_S['ns']:.3f} {aktiv_einheit}·ns"
+
 
 def update_sample_rate_unit():
     new_unit = "µs" if st.session_state.sample_rate_unit_toggle else "Hz"
@@ -984,6 +1003,10 @@ show_rect_fit = st.sidebar.toggle(
     "Rechteck-Fit füllen", key="show_rect_fit",
     help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
+show_integral = st.sidebar.toggle(
+    "I anzeigen (Integration)", key="show_integral",
+    help="Zeichnet die Fläche unter der aktiven Kurve zwischen XA und XB transparent ein.",
+)
 show_velocity = st.sidebar.toggle(
     "D anzeigen (1. Ableitung)", key="show_velocity",
     help="Zeigt die 1. Ableitung des aktiven Kanals auf einer zweiten Y-Achse rechts.",
@@ -1064,6 +1087,14 @@ v_cursor_delta = (
 )
 
 idx_start, idx_end = sorted([idx_a, idx_b])
+
+# Integral unter der aktiven Kurve zwischen XA und XB (Trapezregel, volle Auflösung)
+if idx_end > idx_start:
+    _t_int = df.loc[idx_start:idx_end, 'Zeit (ms)'].values
+    _y_int = df.loc[idx_start:idx_end, active_sensor].values
+    integral_val = float(np.trapezoid(_y_int, _t_int))   # [aktiv_einheit × zeit_einheit]
+else:
+    integral_val = 0.0
 
 # Initialisierung der Peak-Marker (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
@@ -1284,6 +1315,15 @@ if show_acceleration and acceleration is not None:
         x=df_plot['Zeit (ms)'], y=acceleration,
         name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
     ))
+if show_integral and idx_end > idx_start:
+    _mask_int = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
+    _df_int_slice = df_plot[_mask_int]
+    if len(_df_int_slice) > 0:
+        _zeichne_integral_flaeche(
+            fig,
+            _df_int_slice['Zeit (ms)'].values, _df_int_slice[active_sensor].values,
+            yaxis=active_yaxis,
+        )
 
 _y_lim_keys = (
     ['v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max']
@@ -1384,10 +1424,11 @@ g2.metric("ΔD (A-B)",          _fmt_val(v_cursor_delta, v_einheit) if not np.is
 g3.metric("D max (Peak)",      _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
 g4.metric("SOP",               _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
 
-# Zeile 3 – D2 (2. Ableitung)
-a1, a2 = st.columns(2)
+# Zeile 3 – D2 (2. Ableitung) + Integral
+a1, a2, a3 = st.columns(3)
 a1.metric("D2 max Fall.",      _fmt_val(a_max_falling, a_einheit)  if not np.isnan(a_max_falling) else "N/A")
 a2.metric("D2 min Rise.",      _fmt_val(a_min_rising, a_einheit)   if not np.isnan(a_min_rising) else "N/A")
+a3.metric("∫ (A-B)",           _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
 
 # ---------------------------------------------------------------------------
 # EXPORT
@@ -1410,6 +1451,8 @@ metrics = {
     # D2 (2. Ableitung)
     "D2 max Fall.":             _fmt_val(a_max_falling, a_einheit)         if not np.isnan(a_max_falling) else "N/A",
     "D2 min Rise.":             _fmt_val(a_min_rising, a_einheit)          if not np.isnan(a_min_rising) else "N/A",
+    # Integral
+    "∫ (A-B)":                  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
@@ -1437,6 +1480,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 hz_faktor=_zhf,
                 zeit_einheit=_zeit_einheit,
                 kanal_ch_num=_sensor_ch_num,
+                show_integral=show_integral,
             )
             stem = uploaded_file.name.rsplit('.', 1)[0]
             if export_format == "PDF":
