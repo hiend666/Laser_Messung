@@ -17,24 +17,45 @@ import reader
 from chart import (
     KANAL_FARBEN, FARBE_D, FARBE_D2, FARBE_V_SCHNITT,
     FARBE_VMAX, FARBE_AMAX, FARBE_CURSOR,
+    Y_PUFFER, STEP,
     _ZEIT_TO_S, _ableit_info, _yachsen_layout,
     _zeichne_rechteck_fit, _zeichne_integral_flaeche, _finde_sop_kreuzungen,
-    build_chart_png, build_pdf,
+    _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.00.16"
+VERSION = "v1.01.00"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
 # ---------------------------------------------------------------------------
 
 MAX_PLOT_PUNKTE = 5_000     # Downsampling-Schwelle für interaktives Diagramm
+N_KANÄLE        = 4         # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
 
 # Einheiten-Auswahl für Kanäle
 EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
-EINHEIT_ALLE = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+EINHEIT_ALLE     = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
 
-N_KANÄLE = 4     # Maximale Kanalanzahl – einzige Stelle um diese zu ändern
+# Cursor-Startposition beim Laden einer neuen Datei (Anteil der Gesamtzeit)
+CURSOR_XA_INIT_FRAC = 0.30
+CURSOR_XB_INIT_FRAC = 0.60
+
+# Y-Offset-Slider: Mindestbereich und Skalierungsfaktor für automatische Grenzen
+Y_OFFSET_LIMIT_MIN    = 600.0
+Y_OFFSET_LIMIT_FAKTOR = 1.5
+
+# Schrittweiten-Schwellen für Y-Offset-Slider (Absolutwert → Schrittweite)
+SLIDER_STEP_SCHWELLEN = (600.0, 6000.0, 60000.0)
+
+# Rand beim Crop (Anteil des Cursor-Abstands beiderseits)
+CROP_RAND_FAKTOR = 0.15
+
+# k-Means Iterationen für Rechteck-Fit-Schwellwert-Berechnung
+K_MEANS_ITER = 5
+
+# Zeiteinheit-Lookup: hz_faktor (int) → Einheitenstring, abgeleitet aus _ZEIT_TO_S
+_ZEIT_HZ_ZU_EINHEIT: dict[int, str] = {round(1 / v): k for k, v in _ZEIT_TO_S.items()}
+
 
 def _einh_sfx(einheit: str) -> str:
     return einheit.replace('µ', 'u').replace('°', 'deg').replace('%', 'pct').replace('/', 'p')
@@ -72,7 +93,6 @@ st.markdown("""
 # Widget-Keys (xa_sw, xa_nw, …) gehören ausschließlich den Widgets;
 # ihre on_change-Callbacks schreiben in den freien Key zurück.
 # Externe Setter (Buttons, Auto-Reset) schreiben nur in freie Keys.
-# Kanal-Standardnamen und Oszilloskop-Skalierungen (Index 0 = Kanal 1)
 _CH_NAMEN_DEFAULT  = ['Festo', 'DST'] + [''] * (N_KANÄLE - 2)
 _OSC_SKALE_DEFAULT = [1.0, 1.0, 100.0] + [1.0] * (N_KANÄLE - 3)
 
@@ -107,7 +127,7 @@ defaults = {
     'a_axis_min': -20_000,
     'a_axis_max':  20_000,
     'zeit_hz_faktor': 1000.0,  # Umrechnungsfaktor s → Anzeigeeinheit (1e3=ms, 1e6=µs, 1e9=ns)
-    'n_kanäle_datei': N_KANÄLE,  # Kanalanzahl laut geladener Datei
+    'n_kanäle_datei': N_KANÄLE,
     'sub_dateityp':   True,
     'sub_einlesen':   False,
     'sub_kanaele':    False,
@@ -117,7 +137,6 @@ defaults = {
     'sub_speichern':  False,
     'einstellungen':  True,
 }
-# Pro-Kanal-Defaults per Loop – einzige Stelle mit kanalanzahlabhängiger Logik
 for _i in range(1, N_KANÄLE + 1):
     defaults[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
     defaults[f'ch{_i}_einheit'] = 'µm'
@@ -126,11 +145,9 @@ for _i in range(1, N_KANÄLE + 1):
     defaults[f'off{_i}_slider'] = 0.0
     defaults[f'x_off{_i}']     = 0.0
     defaults[f'show_ch{_i}']   = True
-# Y-Achsen-Grenzwerte pro Einheit (0 = automatisch) – für Rückwärtskompatibilität
 for _e in EINHEIT_ALLE:
     defaults[einheit_ss_key_min(_e)] = 0.0
     defaults[einheit_ss_key_max(_e)] = 0.0
-# Y-Achsen-Grenzwerte pro Kanal (0 = automatisch)
 for _i in range(1, N_KANÄLE + 1):
     defaults[f'ch{_i}_ymin'] = 0.0
     defaults[f'ch{_i}_ymax'] = 0.0
@@ -139,7 +156,6 @@ for key, val in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-# Keys die beim JSON-Export/Import gespeichert werden
 EINSTELLUNGEN_KEYS: list[str] = [
     'file_type_radio',
     'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
@@ -212,8 +228,7 @@ def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
     low_center  = min_val
     high_center = max_val
 
-    # k-Means-ähnliche Iteration für robusten Schwellwert
-    for _ in range(5):
+    for _ in range(K_MEANS_ITER):
         high_mask = signal >= threshold
         low_mask  = signal < threshold
         if not np.any(high_mask) or not np.any(low_mask):
@@ -235,7 +250,6 @@ def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
     if not np.any(high_mask) or not np.any(low_mask):
         return None
 
-    # Zusammenhängende High-Runs (Pulse) ermitteln
     runs  = []
     start = 0
     while start < len(high_mask):
@@ -253,38 +267,60 @@ def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
     return {'runs': runs, 'y_low': low_center, 'y_high': high_center}
 
 
+@st.cache_data
+def _build_display_df_cached(
+    df_raw: pd.DataFrame,
+    file_type: str,
+    sample_rate_hz: float,
+    kanal_namen: tuple[str, ...],
+    offsets: tuple[float, ...],
+    zeit_hz_faktor: float = 1000.0,
+) -> tuple[pd.DataFrame, float]:
+    """Gecachter Wrapper um reader.build_display_df – Y-Offsets und Zeitachse."""
+    return reader.build_display_df(df_raw, file_type, sample_rate_hz, kanal_namen, offsets, zeit_hz_faktor)
+
+
 # ---------------------------------------------------------------------------
 # CALLBACKS – Zwei-Key-Muster
 # Widgets schreiben immer in den freien Key (xa/xb/off1…4), nie umgekehrt.
 # ---------------------------------------------------------------------------
 
-def update_xa_from_slider():
-    val = max(0.0, float(st.session_state.xa_sw))
-    st.session_state.xa    = val
-    st.session_state.xa_nw = val   # Zahlenfeld synchron halten
+def _make_cursor_cb(cursor: str, source: str):
+    """Erzeugt Callback für Cursor-Widget (slider oder num).
+    Schreibt den Wert des auslösenden Widgets in den freien Key und das Peer-Widget.
+    """
+    sw_key   = f'{cursor}_sw'
+    nw_key   = f'{cursor}_nw'
+    from_key = sw_key if source == 'slider' else nw_key
+    to_key   = nw_key if source == 'slider' else sw_key
+    def _cb():
+        val = max(0.0, float(st.session_state[from_key]))
+        st.session_state[cursor] = val
+        st.session_state[to_key] = val
+    return _cb
 
-def update_xa_from_num():
-    val = max(0.0, float(st.session_state.xa_nw))
-    st.session_state.xa    = val
-    st.session_state.xa_sw = val   # Slider synchron halten
-
-def update_xb_from_slider():
-    val = max(0.0, float(st.session_state.xb_sw))
-    st.session_state.xb    = val
-    st.session_state.xb_nw = val
-
-def update_xb_from_num():
-    val = max(0.0, float(st.session_state.xb_nw))
-    st.session_state.xb    = val
-    st.session_state.xb_sw = val
+update_xa_from_slider = _make_cursor_cb('xa', 'slider')
+update_xa_from_num    = _make_cursor_cb('xa', 'num')
+update_xb_from_slider = _make_cursor_cb('xb', 'slider')
+update_xb_from_num    = _make_cursor_cb('xb', 'num')
 
 def _make_off_cb(i: int):
     def _cb(): st.session_state[f'off{i}'] = st.session_state[f'off{i}_slider']
     return _cb
 
-# Indizierter Zugriff via OFF_CALLBACKS[kanal_index_0basiert]
 OFF_CALLBACKS = [_make_off_cb(i) for i in range(1, N_KANÄLE + 1)]
 
+
+def _setze_cursor_position(total_time_ms: float) -> None:
+    """Setzt XA und XB auf Standardposition (30 % und 60 % der Gesamtzeit)."""
+    xa_init = total_time_ms * CURSOR_XA_INIT_FRAC
+    xb_init = total_time_ms * CURSOR_XB_INIT_FRAC
+    st.session_state.xa    = xa_init
+    st.session_state.xa_sw = xa_init
+    st.session_state.xa_nw = xa_init
+    st.session_state.xb    = xb_init
+    st.session_state.xb_sw = xb_init
+    st.session_state.xb_nw = xb_init
 
 
 def _fmt_zeit(value: float, einheit: str) -> str:
@@ -323,7 +359,6 @@ def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
     abs_v = abs(value)
     if abs_v == 0 or (0.001 <= abs_v < 10_000):
         return f"{value:.{prec}f} {einheit}"
-    # Zu viele Vor- oder Nachkommastellen → Wissenschaftliche Notation
     return f"{value:.{prec}e} {einheit}"
 
 
@@ -352,7 +387,6 @@ def update_sample_rate_unit():
         st.session_state.sample_rate_unit = new_unit
 
 
-# Alle Keys der Unter-Expander im Einstellungen-Block (Reihenfolge = Anzeigereihenfolge)
 _SUB_EXPANDER_KEYS = (
     'sub_dateityp', 'sub_einlesen', 'sub_kanaele',
     'sub_offsets', 'sub_xoffset', 'sub_grenzwerte', 'sub_speichern',
@@ -405,7 +439,6 @@ def on_settings_upload():
         st.session_state['_settings_load_status'] = str(_exc)
 
 
-# Kanal-Presets je Dateityp – wird von update_sample_rate_for_file_type() genutzt
 _DATEITYP_KANAELE: dict[str, list[dict]] = {
     "Hubmessung": [
         {'name': 'Hub',      'einheit': 'µm', 'skale': 1.0},
@@ -439,7 +472,7 @@ def update_sample_rate_for_file_type():
 
 
 # ---------------------------------------------------------------------------
-# HILFSFUNKTIONEN – INDEX UND GESCHWINDIGKEIT
+# HILFSFUNKTIONEN – INDEX UND ABLEITUNGEN
 # ---------------------------------------------------------------------------
 
 def get_idx_at_x(x: float, sample_rate: float, max_idx: int, hz_faktor: float = 1000.0) -> int:
@@ -447,43 +480,9 @@ def get_idx_at_x(x: float, sample_rate: float, max_idx: int, hz_faktor: float = 
     return int(np.clip(round(x / hz_faktor * sample_rate), 0, max_idx))
 
 
-def _berechne_ableitungen_fuer_diagramm(
-    df_quelle: pd.DataFrame,
-    sensor: str,
-    show_velocity: bool,
-    show_acceleration: bool,
-    v_faktor: float = 1e-3,
-    a_faktor: float = 1e-6,
-    hz_faktor: float = 1000.0,
-) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Berechnet D (1. Ableitung) und D2 (2. Ableitung) für die Diagramm-Darstellung.
-
-    v_faktor/a_faktor wandeln die SG-Rohableitung in die Anzeigeeinheit um.
-    Gibt (d, d2) zurück, jeweils None wenn nicht aktiviert oder zu wenig Daten.
-    """
-    if len(df_quelle) <= 1:
-        return None, None
-
-    arr  = df_quelle[sensor].values
-    dt_s = (df_quelle['Zeit (ms)'].iloc[1] - df_quelle['Zeit (ms)'].iloc[0]) / hz_faktor
-
-    velocity = None
-    if show_velocity:
-        roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length, 1)
-        velocity = roh * v_faktor if roh is not None else None
-
-    acceleration = None
-    if show_acceleration:
-        roh = reader.berechne_sg_ableitung(arr, dt_s, st.session_state.window_length_accel, 2)
-        acceleration = roh * a_faktor if roh is not None else None
-
-    return velocity, acceleration
-
-
-
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # HAUPTBEREICH
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # SIDEBAR: CSV-IMPORT UND EINSTELLUNGEN
@@ -493,10 +492,8 @@ st.sidebar.header("1. Import")
 st.sidebar.caption(f"Version: {VERSION}")
 
 file_type = st.session_state.get('file_type_radio', 'CSV plain')
-# Zeiteinheit früh aus Session-State lesen – wird in der gesamten Sidebar benötigt
-_zhf          = st.session_state.get('zeit_hz_faktor', 1000.0)
-_ZEIT_EINHEIT_MAP = {1.0: 's', 1e3: 'ms', 1e6: 'µs', 1e9: 'ns'}
-_zeit_einheit = _ZEIT_EINHEIT_MAP.get(_zhf, 'ms')
+_hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
+_zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
 
 if file_type == "Hubmessung":
     file_extensions = ["txt"]
@@ -525,7 +522,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
     with st.expander("Einlesen", expanded=st.session_state.sub_einlesen, key="sub_einlesen", on_change=_SUB_EXPANDER_CBS['sub_einlesen']):
         if file_type == "Oszilloskop CSV":
             st.caption("Zeitachse wird aus der Datei gelesen.")
-            # Platzhalter-Wert damit sample_rate weiter unten verfügbar ist
             sample_rate_input = st.session_state.sample_rate
             sample_rate_unit  = st.session_state.sample_rate_unit
             sample_rate       = 1_000_000.0 / sample_rate_input if sample_rate_unit == "µs" else sample_rate_input
@@ -556,7 +552,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
-    # Kanalanzahl aus Datei erkennen (gecacht) – steuert wie viele Felder der Expander zeigt
     _n_show = N_KANÄLE
     if uploaded_file:
         try:
@@ -568,7 +563,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             pass
         st.session_state['n_kanäle_datei'] = _n_show
 
-    # Vor Widget-Rendering: leere Kanalnamen für erkannte Datei-Kanäle auffüllen
     if uploaded_file and _n_show > 0:
         for _i in range(1, _n_show + 1):
             if not st.session_state.get(f'ch{_i}_name', '').strip():
@@ -576,7 +570,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele", on_change=_SUB_EXPANDER_CBS['sub_kanaele']):
         st.caption("Leer: wird beim Schließen automatisch als 'Kanal N' benannt.")
-        # Für Oszilloskop: Einheiten aus Datei-Header vorlesen
         _osc_einheiten: list[str] = []
         if file_type == "Oszilloskop CSV" and uploaded_file:
             _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
@@ -610,8 +603,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         # Nur die ersten _n_show Kanäle verwenden – verhindert, dass alte Namen aus
         # früheren Dateien mit mehr Kanälen mitgeschleppt werden.
         kanal_namen_tuple = tuple(n for n in _kanal_cfg[:_n_show] if n)
-        # Kanalname → 1-basierte Kanal-Nummer (für show_chN Keys)
-        _sensor_ch_num = {name: i + 1 for i, name in enumerate(_kanal_cfg[:_n_show]) if name}
+        _sensor_ch_num    = {name: i + 1 for i, name in enumerate(_kanal_cfg[:_n_show]) if name}
 
         if len(kanal_namen_tuple) < 1:
             st.sidebar.error("Mindestens ein Kanalname muss angegeben werden.")
@@ -624,11 +616,11 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         )
 
         try:
-            df_raw, _hz_f = load_rohdaten(
+            df_raw, _hz_f_datei = load_rohdaten(
                 file_bytes, file_type, st.session_state.skip_rows,
                 st.session_state.max_samples, kanal_namen_tuple, _osc_skale_tuple,
             )
-            st.session_state['zeit_hz_faktor'] = _hz_f
+            st.session_state['zeit_hz_faktor'] = _hz_f_datei
         except ValueError as e:
             st.error(f"Fehler beim Laden: {e}")
             st.stop()
@@ -646,19 +638,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
                 st.session_state[f'off{i}']        = 0.0
                 st.session_state[f'off{i}_slider'] = 0.0
-            # Überzählige Kanalnamen leeren (neue Datei hat evtl. weniger Kanäle)
             _n_d = st.session_state.get('n_kanäle_datei', N_KANÄLE)
             for _i in range(_n_d + 1, N_KANÄLE + 1):
                 st.session_state[f'ch{_i}_name'] = ''
-            # Alle erkannten Kanäle einblenden
             for _i in range(1, _n_show + 1):
                 st.session_state[f'show_ch{_i}'] = True
-            st.session_state.xa    = total_time_ms * 0.30
-            st.session_state.xa_sw = total_time_ms * 0.30
-            st.session_state.xa_nw = total_time_ms * 0.30
-            st.session_state.xb    = total_time_ms * 0.60
-            st.session_state.xb_sw = total_time_ms * 0.60
-            st.session_state.xb_nw = total_time_ms * 0.60
+            _setze_cursor_position(total_time_ms)
             st.session_state.crop_start     = None
             st.session_state.crop_end       = None
             st.session_state.zoom_token    += 1
@@ -672,8 +657,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         sensor_namen = []
         offs = tuple()
 
-    # Y-Offset und X-Offset außerhalb des if-Blocks – Expander müssen immer gerendert
-    # werden damit die Akkordeon-Callbacks zuverlässig funktionieren.
     with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets", on_change=_SUB_EXPANDER_CBS['sub_offsets']):
         if uploaded_file and df_raw is not None and sensor_namen:
             with st.container(border=True):
@@ -698,13 +681,13 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.markdown("")
             for i, name in enumerate(sensor_namen):
                 _raw_col  = df_raw[name]
-                _off_lim  = max(600.0,
-                                abs(float(_raw_col.min())) * 1.5,
-                                abs(float(_raw_col.max())) * 1.5)
+                _off_lim  = max(Y_OFFSET_LIMIT_MIN,
+                                abs(float(_raw_col.min())) * Y_OFFSET_LIMIT_FAKTOR,
+                                abs(float(_raw_col.max())) * Y_OFFSET_LIMIT_FAKTOR)
                 _off_lim  = float(np.ceil(_off_lim / 100) * 100)
-                _off_step = (0.1  if _off_lim <=   600 else
-                             1.0  if _off_lim <=  6000 else
-                             10.0 if _off_lim <= 60000 else 100.0)
+                _off_step = (0.1   if _off_lim <= SLIDER_STEP_SCHWELLEN[0] else
+                             1.0   if _off_lim <= SLIDER_STEP_SCHWELLEN[1] else
+                             10.0  if _off_lim <= SLIDER_STEP_SCHWELLEN[2] else 100.0)
                 st.slider(
                     name, -_off_lim, _off_lim, step=_off_step,
                     key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
@@ -784,7 +767,6 @@ if not uploaded_file:
 
 # ---------------------------------------------------------------------------
 # KANAL-KONFIGURATION – aktive Kanäle aus Einstellungen ableiten
-# _kanal_cfg und kanal_namen_tuple wurden bereits im Sidebar-Block gesetzt.
 # ---------------------------------------------------------------------------
 
 kanal_einheit_map = {
@@ -798,45 +780,22 @@ if len(kanal_namen_tuple) < 1:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# DATEN LADEN
+# DATENAUFBEREITUNG
 # ---------------------------------------------------------------------------
 
-file_bytes = uploaded_file.getvalue()
-osc_skale_tuple = tuple(
-    st.session_state[f'osc_skale_{i+1}'] for i in range(len(kanal_namen_tuple))
-)
-
-try:
-    df_raw, _hz_faktor = load_rohdaten(
-        file_bytes, file_type, st.session_state.skip_rows,
-        st.session_state.max_samples, kanal_namen_tuple, osc_skale_tuple,
-    )
-    st.session_state['zeit_hz_faktor'] = _hz_faktor
-except ValueError as e:
-    st.error(f"Fehler beim Laden: {e}")
-    st.stop()
-
-sensor_namen = list(kanal_namen_tuple)   # tatsächlich geladene Kanalnamen
-
-# ---------------------------------------------------------------------------
-# DATENAUFBEREITUNG – reader.build_display_df erzeugt df_full + aktuelle Samplerate
-# ---------------------------------------------------------------------------
-
-# Offsets für alle aktiven Kanäle auslesen
 offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
 
-_zhf = st.session_state.get('zeit_hz_faktor', 1000.0)   # s → Anzeigeeinheit
-_ZEIT_EINHEIT_MAP = {1.0: 's', 1e3: 'ms', 1e6: 'µs', 1e9: 'ns'}
-_zeit_einheit = _ZEIT_EINHEIT_MAP.get(_zhf, 'ms')
+_hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
+_zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
 
-df_full, sample_rate = reader.build_display_df(
+df_full, sample_rate = _build_display_df_cached(
     df_raw, file_type, sample_rate, kanal_namen_tuple, offs,
-    zeit_hz_faktor=_zhf,
+    zeit_hz_faktor=_hz_faktor,
 )
 
 # ---------------------------------------------------------------------------
-# USE-DATA – X-Offset als Sample-Shift einbauen
-# RAW → [scale + Y-offset] = df_full   →   [X-shift] = df_use   →   [Crop] = df
+# X-OFFSET – als Sample-Shift einbauen
+# RAW → [scale + Y-offset] = df_full  →  [X-shift] = df_use  →  [Crop] = df
 # ---------------------------------------------------------------------------
 
 _x_offs = [float(st.session_state.get(f'x_off{i+1}', 0.0)) for i in range(len(sensor_namen))]
@@ -870,12 +829,7 @@ if st.session_state.last_file_name != uploaded_file.name:
         st.session_state[f'off{i}_slider'] = 0.0
     for i in range(1, N_KANÄLE + 1):
         st.session_state[f'x_off{i}'] = 0.0
-    st.session_state.xa    = total_time_ms * 0.30
-    st.session_state.xa_sw = total_time_ms * 0.30
-    st.session_state.xa_nw = total_time_ms * 0.30
-    st.session_state.xb    = total_time_ms * 0.60
-    st.session_state.xb_sw = total_time_ms * 0.60
-    st.session_state.xb_nw = total_time_ms * 0.60
+    _setze_cursor_position(total_time_ms)
     st.session_state.crop_start     = None
     st.session_state.crop_end       = None
     st.session_state.zoom_token    += 1
@@ -886,6 +840,28 @@ max_zeit_full = float(df_use['Zeit (ms)'].iloc[-1])
 max_idx_full  = len(df_use) - 1
 
 # ---------------------------------------------------------------------------
+# AUTO-RESET BEI NEUER DATEI – guard, falls Sidebar-Reset nicht greifen konnte
+# ---------------------------------------------------------------------------
+
+if st.session_state.last_file_name != uploaded_file.name:
+    total_time_ms = float(df_use['Zeit (ms)'].iloc[-1])
+    for i, name in enumerate(sensor_namen, 1):
+        off_init = float(df_raw[name].min()) * -1.0
+        st.session_state[f'off{i}']        = off_init
+        st.session_state[f'off{i}_slider'] = off_init
+    for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
+        st.session_state[f'off{i}']        = 0.0
+        st.session_state[f'off{i}_slider'] = 0.0
+    for i in range(1, N_KANÄLE + 1):
+        st.session_state[f'x_off{i}'] = 0.0
+    _setze_cursor_position(total_time_ms)
+    st.session_state.crop_start     = None
+    st.session_state.crop_end       = None
+    st.session_state.zoom_token    += 1
+    st.session_state.last_file_name = uploaded_file.name
+    st.rerun()
+
+# ---------------------------------------------------------------------------
 # CROP-LOGIK
 # ---------------------------------------------------------------------------
 
@@ -894,8 +870,8 @@ crop_active = (
     and st.session_state.crop_end is not None
 )
 if crop_active:
-    ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _zhf)
-    ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _zhf)
+    ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _hz_faktor)
+    ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _hz_faktor)
     df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
     min_zeit = float(df['Zeit (ms)'].iloc[0])
     max_zeit = float(df['Zeit (ms)'].iloc[-1])
@@ -932,13 +908,9 @@ sichtbare_sensor_namen = [
     if st.session_state.get(f'show_ch{_sensor_ch_num[name]}', True) or name == active_sensor
 ]
 
-# Ableitungs-Einheiten und Konversionsfaktoren für den aktiven Kanal
 _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
 v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_einheit)
 
-# Cursor-Werte auf aktiven Zeitbereich begrenzen.
-# Alle drei gebundenen Keys (xa, xa_sw, xa_nw) werden synchronisiert damit
-# Slider und Zahlenfeld nie voneinander abweichen.
 xa = float(np.clip(st.session_state.xa, min_zeit, max_zeit))
 xb = float(np.clip(st.session_state.xb, min_zeit, max_zeit))
 if (xa != st.session_state.xa
@@ -969,11 +941,10 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
-    _tb_f = _zhf / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
+    _tb_f = _hz_faktor / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
     _x_len = max(1e-9, max_zeit - min_zeit)
     _tb_min_curr = _x_len / 200
     _tb_max_curr = _x_len * 0.75
-    # Beste Untereinheit: kleinste bei der min >= 0.001 (≤3 Dezimalstellen)
     _val_s_min = _tb_min_curr * _ZEIT_TO_S.get(_zeit_einheit, 1e-3)
     _tb_s_einheit = 'ns'
     for _u in ('s', 'ms', 'µs', 'ns'):
@@ -1039,7 +1010,6 @@ if show_sop:
         help="Höhe auf der steigenden Flanke in Prozent des Hub (0 % = unterer Pegel, 100 % = oberer Pegel).",
     )
 
-# Rechteck-Fit auf den vollständigen (ungecropten) Datensatz anwenden
 rect_fit = compute_best_fit_rectangle(
     df_use['Zeit (ms)'].values,
     df_use[active_sensor].values,
@@ -1049,23 +1019,20 @@ rect_fit = compute_best_fit_rectangle(
 # MESSWERTBERECHNUNG
 # ---------------------------------------------------------------------------
 
-# Indizes der Cursor-Positionen im (ggf. gecropten) DataFrame
 if crop_active:
-    idx_a = get_idx_at_x(xa - min_zeit, sample_rate, max_idx, _zhf)
-    idx_b = get_idx_at_x(xb - min_zeit, sample_rate, max_idx, _zhf)
+    idx_a = get_idx_at_x(xa - min_zeit, sample_rate, max_idx, _hz_faktor)
+    idx_b = get_idx_at_x(xb - min_zeit, sample_rate, max_idx, _hz_faktor)
 else:
-    idx_a = get_idx_at_x(xa, sample_rate, max_idx, _zhf)
-    idx_b = get_idx_at_x(xb, sample_rate, max_idx, _zhf)
+    idx_a = get_idx_at_x(xa, sample_rate, max_idx, _hz_faktor)
+    idx_b = get_idx_at_x(xb, sample_rate, max_idx, _hz_faktor)
 
 ya = df.loc[idx_a, active_sensor]
 yb = df.loc[idx_b, active_sensor]
 
-dt_val_ms = abs(xb - xa)                                                    # Anzeigeeinheit
-dy        = abs(yb - ya)                                                    # [aktiv_einheit]
-# v_avg: dy/dt in [einheit/Anzeigeeinheit] → × hz_faktor → Anzeigeeinheit/s → × v_faktor
-v_avg     = dy / dt_val_ms * _zhf * v_faktor if dt_val_ms > 0 else 0.0
+dt_val_ms = abs(xb - xa)
+dy        = abs(yb - ya)
+v_avg     = dy / dt_val_ms * _hz_faktor * v_faktor if dt_val_ms > 0 else 0.0
 
-# Momentan-D an XA und XB über ein Zeitbasis-Fenster
 halbes_zeitfenster = max(1, int(v_time_base_ms / 1000.0 * sample_rate / 2))
 
 def v_at_cursor(idx: int) -> float:
@@ -1096,7 +1063,16 @@ if idx_end > idx_start:
 else:
     integral_val = 0.0
 
-# Initialisierung der Peak-Marker (werden nur gesetzt wenn genug Datenpunkte vorhanden)
+# ---------------------------------------------------------------------------
+# SG-ABLEITUNGEN – einmalig auf vollem Datensatz (Messwerte + Diagramm)
+# ---------------------------------------------------------------------------
+
+arr_full  = df[active_sensor].values
+dt_step_s = 1.0 / sample_rate
+sg_v_roh  = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
+sg_a_roh  = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+
+# Peak-Marker-Initialisierung (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
 t_vmax_ende,  y_vmax_ende  = None, None
 t_amax_falling, y_amax_falling = None, None
@@ -1111,20 +1087,14 @@ sop_linien: list = []
 v_sop            = float('nan')
 
 if idx_end > idx_start:
-    arr_full  = df[active_sensor].values
-    dt_step_s = 1.0 / sample_rate
-
-    # v-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte
-    gefilt_geschw_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
-    if gefilt_geschw_roh_full is not None:
-        abs_geschw_full = np.abs(gefilt_geschw_roh_full * v_faktor)
-        # Peak nur im Cursor-Bereich suchen
-        abs_geschw_slice  = abs_geschw_full[idx_start:idx_end + 1]
-        idx_vmax_peak_loc = int(np.argmax(abs_geschw_slice))
+    if sg_v_roh is not None:
+        sg_v_abs  = np.abs(sg_v_roh * v_faktor)
+        sg_v_slice        = sg_v_abs[idx_start:idx_end + 1]
+        idx_vmax_peak_loc = int(np.argmax(sg_v_slice))
         idx_vmax_peak     = idx_start + idx_vmax_peak_loc
         iv_start          = max(0, idx_vmax_peak - halbes_zeitfenster)
         iv_ende           = min(max_idx, idx_vmax_peak + halbes_zeitfenster)
-        v_max             = float(np.mean(abs_geschw_full[iv_start:iv_ende + 1]))
+        v_max             = float(np.mean(sg_v_abs[iv_start:iv_ende + 1]))
 
         if 0 <= iv_start <= max_idx and 0 <= iv_ende <= max_idx:
             t_vmax_start = df.loc[iv_start, 'Zeit (ms)']
@@ -1133,30 +1103,26 @@ if idx_end > idx_start:
             y_vmax_ende  = df.loc[iv_ende,  active_sensor]
             has_vmax     = True
 
-    # a-max: SG-Filter auf dem vollständigen Datensatz – verhindert Randeffekte an Cursor-Grenzen
-    gefilt_beschl_roh_full = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
-    if gefilt_beschl_roh_full is not None:
-        gefilt_beschl_full = gefilt_beschl_roh_full * a_faktor
+    if sg_a_roh is not None:
+        sg_a = sg_a_roh * a_faktor
 
         def _peak_marker(idx_abs):
-            """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak (absoluter Index)."""
+            """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak."""
             ia0  = max(0, idx_abs - halbes_zeitfenster)
             ia1  = min(max_idx, idx_abs + halbes_zeitfenster)
-            wert = float(np.mean(gefilt_beschl_full[ia0:ia1 + 1]))
+            wert = float(np.mean(sg_a[ia0:ia1 + 1]))
             return wert, float(df.loc[idx_abs, 'Zeit (ms)']), float(df.loc[idx_abs, active_sensor])
 
-        # Peak nur im Cursor-Bereich suchen
-        beschl_slice = gefilt_beschl_full[idx_start:idx_end + 1]
+        sg_a_slice = sg_a[idx_start:idx_end + 1]
 
-        idx_falling_abs                                = idx_start + int(np.argmax(beschl_slice))
+        idx_falling_abs                                = idx_start + int(np.argmax(sg_a_slice))
         a_max_falling, t_amax_falling, y_amax_falling = _peak_marker(idx_falling_abs)
         has_amax_falling = True
 
-        idx_rising_abs                               = idx_start + int(np.argmin(beschl_slice))
+        idx_rising_abs                               = idx_start + int(np.argmin(sg_a_slice))
         a_min_rising, t_amax_rising, y_amax_rising   = _peak_marker(idx_rising_abs)
         has_amax_rising = True
 
-# SOP – steht nach halbes_zeitfenster-Definition und nach rect_fit
 if show_sop and rect_fit is not None:
     sop_linien, v_sop = _finde_sop_kreuzungen(
         df_use['Zeit (ms)'].values,
@@ -1173,29 +1139,25 @@ if show_sop and rect_fit is not None:
 # ---------------------------------------------------------------------------
 
 if len(df) > MAX_PLOT_PUNKTE:
-    step    = len(df) // MAX_PLOT_PUNKTE
-    df_plot = df.iloc[::step]
+    _ds_step = len(df) // MAX_PLOT_PUNKTE
+    df_plot  = df.iloc[::_ds_step]
 else:
-    df_plot = df
+    _ds_step = 1
+    df_plot  = df
 
-# ---------------------------------------------------------------------------
-# ABLEITUNGEN FÜR DIAGRAMM-DARSTELLUNG
-# ---------------------------------------------------------------------------
-
-velocity, acceleration = _berechne_ableitungen_fuer_diagramm(
-    df_plot, active_sensor, show_velocity, show_acceleration,
-    v_faktor=v_faktor, a_faktor=a_faktor, hz_faktor=_zhf,
-)
+# Ableitungen für Diagramm: SG-Arrays (volle Länge) mit gleichem Schritt slicen –
+# spart einen kompletten SG-Durchlauf gegenüber Neuberechnung auf df_plot.
+velocity     = (sg_v_roh * v_faktor)[::_ds_step] if show_velocity     and sg_v_roh is not None else None
+acceleration = (sg_a_roh * a_faktor)[::_ds_step] if show_acceleration and sg_a_roh is not None else None
 
 # ---------------------------------------------------------------------------
 # DIAGRAMM AUFBAUEN
 # ---------------------------------------------------------------------------
 
-# Y-Bereiche aus vollständigen Daten (df_use) berechnen – Crop darf die Y-Achse nicht verschieben
+# Y-Bereiche aus vollständigen Daten (df_use) – Crop darf die Y-Achse nicht verschieben
 _prim_einheit = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen)), 'µm')
 _prim_namen   = [n for n in sichtbare_sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_einheit] or sichtbare_sensor_namen
 
-# Primäre Achse: Bereich aus vollständigem Datensatz
 _prim_namen_full = [n for n in _prim_namen if n in df_use.columns]
 _y_full_prim = df_use[_prim_namen_full] if _prim_namen_full else None
 if _y_full_prim is not None and not _y_full_prim.empty:
@@ -1204,19 +1166,17 @@ if _y_full_prim is not None and not _y_full_prim.empty:
 else:
     y_max_plot = float(df_plot[_prim_namen].max().max())
     y_min_plot = float(df_plot[_prim_namen].min().min())
-y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * 0.15]
+y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * Y_PUFFER]
 
-# Fallback-Bereiche je Einheit aus vollständigem Datensatz – für Sekundärachsen
 _yrange_fallback: dict[str, list] = {}
 for _e in set(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen):
     _cols_e = [n for n in sichtbare_sensor_namen if kanal_einheit_map.get(n, 'µm') == _e and n in df_use.columns]
     if _cols_e:
-        _lo_e = float(df_use[_cols_e].min().min())
-        _hi_e = float(df_use[_cols_e].max().max())
+        _lo_e   = float(df_use[_cols_e].min().min())
+        _hi_e   = float(df_use[_cols_e].max().max())
         _span_e = _hi_e - _lo_e
-        _yrange_fallback[_e] = [_lo_e, _hi_e + _span_e * 0.15]
+        _yrange_fallback[_e] = [_lo_e, _hi_e + _span_e * Y_PUFFER]
 
-# Per-Kanal-Bereiche für automatische Achsen-Aufteilung (siehe chart.SPLIT_FAKTOR)
 _kanal_bereiche: dict[str, tuple[float, float]] = {}
 for _n in sichtbare_sensor_namen:
     if _n in df_use.columns:
@@ -1238,101 +1198,28 @@ active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
 fig = go.Figure()
 
-for name in sichtbare_sensor_namen:
-    _ci = sensor_namen.index(name)
-    fig.add_trace(go.Scatter(
-        x=df_plot['Zeit (ms)'], y=df_plot[name],
-        name=name, line=dict(color=KANAL_FARBEN[_ci]),
-        yaxis=kanal_zu_yaxis.get(name, 'y'),
-    ))
-
-fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
-fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
-
-if show_v_avg:
-    fig.add_trace(go.Scatter(
-        x=[xa, xb], y=[ya, yb],
-        mode='lines+markers', name='Schnittlinie',
-        line=dict(color=FARBE_V_SCHNITT, width=2, dash='dot'),
-        yaxis=active_yaxis,
-    ))
-
-if rect_fit is not None:
-    _zeichne_rechteck_fit(fig, rect_fit, min_zeit, max_zeit,
-                          mit_fuellung=show_rect_fit, yaxis=active_yaxis)
-
-if has_vmax:
-    fig.add_trace(go.Scatter(
-        x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
-        mode='lines+markers', name='D-max',
-        line=dict(color=FARBE_VMAX, width=2),
-        yaxis=active_yaxis,
-    ))
-if has_amax_falling:
-    fig.add_trace(go.Scatter(
-        x=[t_amax_falling], y=[y_amax_falling],
-        mode='markers', name='D2-max',
-        marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
-                    line=dict(color=FARBE_AMAX, width=2)),
-        yaxis=active_yaxis,
-    ))
-if has_amax_rising:
-    fig.add_trace(go.Scatter(
-        x=[t_amax_rising], y=[y_amax_rising],
-        mode='markers', name='D2-min',
-        marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
-                    line=dict(color=FARBE_AMAX, width=2)),
-        yaxis=active_yaxis,
-    ))
-if sop_linien:
-    erste_sichtbar = True
-    for t_sop, t0, t1, y_lvl in sop_linien:
-        if not (min_zeit <= t_sop <= max_zeit):
-            continue
-        fig.add_trace(go.Scatter(
-            x=[max(t0, min_zeit), min(t1, max_zeit)], y=[y_lvl, y_lvl],
-            mode='lines',
-            name='SOP' if erste_sichtbar else None,
-            showlegend=erste_sichtbar,
-            line=dict(color=FARBE_D, width=2),
-            yaxis=active_yaxis,
-        ))
-        fig.add_trace(go.Scatter(
-            x=[t_sop], y=[y_lvl],
-            mode='markers', showlegend=False,
-            marker=dict(color=FARBE_D, size=14, symbol='x',
-                        line=dict(color=FARBE_D, width=2)),
-            yaxis=active_yaxis,
-        ))
-        erste_sichtbar = False
-if show_velocity and velocity is not None:
-    fig.add_trace(go.Scatter(
-        x=df_plot['Zeit (ms)'], y=velocity,
-        name='D', yaxis=v_yaxis, line=dict(color=FARBE_D),
-    ))
-if show_acceleration and acceleration is not None:
-    fig.add_trace(go.Scatter(
-        x=df_plot['Zeit (ms)'], y=acceleration,
-        name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
-    ))
-if show_integral and idx_end > idx_start:
-    _mask_int = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
-    _df_int_slice = df_plot[_mask_int]
-    if len(_df_int_slice) > 0:
-        _zeichne_integral_flaeche(
-            fig,
-            _df_int_slice['Zeit (ms)'].values, _df_int_slice[active_sensor].values,
-            yaxis=active_yaxis,
-        )
+_baue_traces(
+    fig, df_plot, sichtbare_sensor_namen,
+    kanal_zu_yaxis, active_sensor, active_yaxis,
+    sensor_namen,
+    xa, xb, ya, yb, min_zeit, max_zeit,
+    show_v_avg, rect_fit, show_rect_fit,
+    has_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+    has_amax_falling, t_amax_falling, y_amax_falling,
+    has_amax_rising, t_amax_rising, y_amax_rising,
+    sop_linien,
+    show_velocity, velocity, v_yaxis,
+    show_acceleration, acceleration, a_yaxis,
+    show_integral,
+)
 
 _y_lim_keys = (
     ['v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max']
     + [f'ch{_i}_ymin' for _i in range(1, N_KANÄLE + 1)]
     + [f'ch{_i}_ymax' for _i in range(1, N_KANÄLE + 1)]
 )
-_y_lim_token  = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
-# Achsen-Struktur-Token: erzwingt Plotly-Reset wenn sich Kanal↔Achse-Zuordnung ändert
-_axis_token   = hash(tuple(sorted(kanal_zu_yaxis.items())))
+_y_lim_token = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
+_axis_token  = hash(tuple(sorted(kanal_zu_yaxis.items())))
 
 fig.update_layout(
     xaxis_title=f"Zeit ({_zeit_einheit})",
@@ -1349,7 +1236,6 @@ st.plotly_chart(fig, width="stretch", key="main_chart")
 # CURSOR-SLIDER
 # Linke Spalte (0.04): gleicht Y-Achsen-Breite links aus
 # Rechte Spalte (1 - x_domain_end): gleicht rechte Y-Achsen aus
-# Beide sorgen dafür dass die Slider bündig mit dem Diagramm-Plotbereich laufen
 # ---------------------------------------------------------------------------
 
 _slider_right_pad = round(1.0 - x_domain_end, 4)
@@ -1375,7 +1261,7 @@ with c_slider:
 # CROP / SHOW ALL
 # ---------------------------------------------------------------------------
 
-margin  = abs(xb - xa) * 0.15
+margin  = abs(xb - xa) * CROP_RAND_FAKTOR
 crop_t0 = max(min_zeit, min(xa, xb) - margin)
 crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
@@ -1407,7 +1293,7 @@ if crop_active:
 # KENNGRÖSSEN-ANZEIGE
 # ---------------------------------------------------------------------------
 
-freq_hz = (_zhf / dt_val_ms) if dt_val_ms > 0 else float('nan')
+freq_hz = (_hz_faktor / dt_val_ms) if dt_val_ms > 0 else float('nan')
 hub     = abs(rect_fit['y_high'] - rect_fit['y_low']) if rect_fit is not None else float('nan')
 
 # Zeile 1 – Zeit & Signal
@@ -1477,7 +1363,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                 sop_linien=sop_linien,
                 kanal_einheit_map=kanal_einheit_map,
                 alle_sensor_namen=sensor_namen,
-                hz_faktor=_zhf,
+                hz_faktor=_hz_faktor,
                 zeit_einheit=_zeit_einheit,
                 kanal_ch_num=_sensor_ch_num,
                 show_integral=show_integral,

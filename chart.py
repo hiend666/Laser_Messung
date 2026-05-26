@@ -21,7 +21,10 @@ import reader
 # KONSTANTEN
 # ---------------------------------------------------------------------------
 
-SPLIT_FAKTOR = 15.0  # Y-Achsen-Aufteilung bei gleicher Einheit wenn Bereiche > Faktor abweichen
+SPLIT_FAKTOR  = 15.0   # Y-Achsen-Aufteilung bei gleicher Einheit wenn Bereiche > Faktor abweichen
+STEP          = 0.07   # Plotly-Abstand zwischen rechten Y-Achsen (Anteil der Figure-Breite)
+Y_PUFFER      = 0.15   # Y-Bereich-Puffer oben (15 %) für alle Achsenbereiche
+X_DOMAIN_MIN  = 0.5    # Mindestbreite des Plot-Bereichs wenn viele rechte Achsen vorhanden
 
 # Diagramm-Farben – Kanäle
 FARBE_KANAL1    = '#003366'
@@ -31,11 +34,11 @@ FARBE_KANAL4    = '#2ca02c'
 KANAL_FARBEN    = [FARBE_KANAL1, FARBE_KANAL2, FARBE_KANAL3, FARBE_KANAL4]
 
 # Diagramm-Farben – Auswertung
-FARBE_D         = 'purple'
-FARBE_D2        = 'orange'
-FARBE_V_SCHNITT = 'green'
-FARBE_VMAX      = 'red'
-FARBE_AMAX      = 'orange'
+FARBE_D             = 'purple'
+FARBE_D2            = 'orange'
+FARBE_V_SCHNITT     = 'green'
+FARBE_VMAX          = 'red'
+FARBE_AMAX          = 'orange'
 FARBE_CURSOR        = 'red'
 FARBE_RECHTECK      = 'lime'
 FARBE_INTEGRAL_POS  = 'rgba(0, 100, 200, 0.20)'   # blau – Bereich über der 0-Linie
@@ -93,7 +96,6 @@ def _yachsen_layout(
     - a_yaxis:         yaxis-String für Beschleunigung
     - x_domain_end:    rechte Grenze des Plot-Bereichs (0…1)
     """
-    STEP = 0.07
     _ch_num = kanal_ch_num or {}
 
     def _user_lim_kanal(name: str) -> tuple[float, float] | None:
@@ -122,7 +124,7 @@ def _yachsen_layout(
         if len(kanäle) == 1 and kanal_bereiche and kanäle[0] in kanal_bereiche:
             lo, hi = kanal_bereiche[kanäle[0]]
             span = abs(hi - lo)
-            return [lo, hi + span * 0.15]
+            return [lo, hi + span * Y_PUFFER]
         if y_ranges_fallback:
             for e in [e.strip() for e in titel.split(' / ')]:
                 if e in y_ranges_fallback:
@@ -155,10 +157,8 @@ def _yachsen_layout(
                 lim_gruppen.setdefault(lim, []).append(n)
             else:
                 kein_lim.append(n)
-        # Jede Grenzgruppe bekommt eine eigene Achse
         for gruppe in lim_gruppen.values():
             pre_achsen.append((einheit, gruppe))
-        # Kanäle ohne Grenzen: SPLIT_FAKTOR anwenden
         if len(kein_lim) == 1:
             pre_achsen.append((einheit, kein_lim))
         elif len(kein_lim) > 1:
@@ -174,7 +174,6 @@ def _yachsen_layout(
     lim_zu_idx: dict[tuple[float, float], int] = {}
 
     for einheit, kanäle in pre_achsen:
-        # Gruppe ist nur dann zusammenführbar wenn ALLE Kanäle dieselbe Grenze teilen
         lim_0 = _user_lim_kanal(kanäle[0]) if kanäle else None
         lim = lim_0 if (lim_0 is not None
                         and all(_user_lim_kanal(n) == lim_0 for n in kanäle[1:])) else None
@@ -204,7 +203,6 @@ def _yachsen_layout(
     v_yaxis = f'y{n_sig + 1}'
     a_yaxis = f'y{n_sig + 2}'
 
-    # Rechte Signal-Achsen
     rechte_achsen: list[tuple[str, str, list | None, dict]] = []
     for i, (titel, kanäle) in enumerate(final_achsen[1:], 1):
         rechte_achsen.append((f'yaxis{i + 1}', titel, _rng(titel, kanäle), _achsfarbe(kanäle)))
@@ -220,9 +218,8 @@ def _yachsen_layout(
         rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng, dict(color=FARBE_D2)))
 
     n_right = len(rechte_achsen)
-    x_domain_end = max(0.5, 1.0 - STEP * n_right) if n_right >= 1 else 1.0
+    x_domain_end = max(X_DOMAIN_MIN, 1.0 - STEP * n_right) if n_right >= 1 else 1.0
 
-    # Primäre linke Achse
     titel0, kanäle0 = final_achsen[0] if final_achsen else ('µm', [])
     rng0 = _rng(titel0, kanäle0) if final_achsen else None
     layout_yachsen: dict = {
@@ -302,6 +299,10 @@ def _finde_sop_kreuzungen(
 ) -> tuple[list, float]:
     """Findet SOP-Punkte an steigenden Flanken des Rechteck-Fits.
 
+    Sucht für jeden erkannten Rechteck-Puls die erste steigende Nulldurchgangslinie
+    auf dem SOP-Pegel. Berechnet die Geschwindigkeit an diesem Punkt über ein
+    Mittelungsfenster (halbes_zeitfenster Samples links und rechts).
+
     Gibt (sop_linien, v_sop) zurück:
     - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level) für Diagramm-Linien
     - v_sop:      D am ersten Kreuzungspunkt (in Anzeigeeinheit), oder nan
@@ -329,7 +330,6 @@ def _finde_sop_kreuzungen(
 
         abs_idx = int(idx_fenster[kreuzungs_pos[0] + 1])
 
-        # Geschwindigkeit an der Kreuzung (finite difference über halbes_zeitfenster)
         i0    = max(0, abs_idx - halbes_zeitfenster)
         i1    = min(n - 1, abs_idx + halbes_zeitfenster)
         dt_s  = (i1 - i0) / sample_rate
@@ -344,7 +344,6 @@ def _finde_sop_kreuzungen(
     if not ergebnisse:
         return [], float('nan')
 
-    # Format pro Eintrag: (t_sop, t_links, t_rechts, y_level)
     sop_linien = [(t_sop, t0, t1, y) for t_sop, t0, t1, y, _ in ergebnisse]
     v_sop_wert = ergebnisse[0][4]   # Geschwindigkeit am ersten Kreuzungspunkt
     return sop_linien, v_sop_wert
@@ -354,18 +353,16 @@ def _finde_sop_kreuzungen(
 # INTEGRAL-FLÄCHE
 # ---------------------------------------------------------------------------
 
-def _zeichne_integral_flaeche(fig, x_vals, y_vals, yaxis: str = 'y') -> None:
+def _zeichne_integral_flaeche(fig: go.Figure, x_vals, y_vals, yaxis: str = 'y') -> None:
     """Zeichnet Integralfläche mit zwei Farben: blau über 0, rot unter 0.
 
     Nulldurchgänge werden linear interpoliert, damit die Farbbereiche sauber trennen.
     """
-    import numpy as np
     x = np.asarray(x_vals, dtype=float)
     y = np.asarray(y_vals, dtype=float)
     if len(x) < 2:
         return
 
-    # Nulldurchgänge interpolieren und in x/y einfügen
     x_list, y_list = list(x), list(y)
     inserts = []
     for i in range(len(y) - 1):
@@ -391,6 +388,132 @@ def _zeichne_integral_flaeche(fig, x_vals, y_vals, yaxis: str = 'y') -> None:
         line=dict(color='rgba(200,50,0,0.45)', width=1),
         name='∫⁻', yaxis=yaxis, showlegend=False,
     ))
+
+
+# ---------------------------------------------------------------------------
+# TRACES – gemeinsame Aufbau-Funktion für interaktives Diagramm und PNG-Export
+# ---------------------------------------------------------------------------
+
+def _baue_traces(
+    fig: go.Figure,
+    df_plot,
+    sensor_namen: list[str],
+    kanal_zu_yaxis: dict[str, str],
+    active_sensor: str,
+    active_yaxis: str,
+    alle_sensor_namen: list[str],
+    xa: float, xb: float,
+    ya: float, yb: float,
+    min_zeit: float, max_zeit: float,
+    show_v_avg: bool,
+    rect_fit,
+    show_rect_fit: bool,
+    has_vmax: bool,
+    t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+    has_amax_falling: bool,
+    t_amax_falling, y_amax_falling,
+    has_amax_rising: bool,
+    t_amax_rising, y_amax_rising,
+    sop_linien: list,
+    show_velocity: bool, velocity,
+    v_yaxis: str,
+    show_acceleration: bool, acceleration,
+    a_yaxis: str,
+    show_integral: bool,
+) -> None:
+    """Fügt alle Mess- und Auswertungs-Traces zu fig hinzu.
+
+    Wird sowohl vom interaktiven Diagramm (app.py) als auch vom PNG-Export
+    (build_chart_png) aufgerufen – identische Darstellung in beiden Fällen.
+    """
+    for name in sensor_namen:
+        _ci = alle_sensor_namen.index(name) if name in alle_sensor_namen else 0
+        fig.add_trace(go.Scatter(
+            x=df_plot['Zeit (ms)'], y=df_plot[name],
+            name=name, line=dict(color=KANAL_FARBEN[_ci]),
+            yaxis=kanal_zu_yaxis.get(name, 'y'),
+        ))
+
+    fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
+    fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
+
+    if show_v_avg:
+        fig.add_trace(go.Scatter(
+            x=[xa, xb], y=[ya, yb],
+            mode='lines+markers', name='Schnittlinie',
+            line=dict(color=FARBE_V_SCHNITT, width=2, dash='dot'),
+            yaxis=active_yaxis,
+        ))
+
+    if rect_fit is not None:
+        _zeichne_rechteck_fit(fig, rect_fit, min_zeit, max_zeit,
+                              mit_fuellung=show_rect_fit, yaxis=active_yaxis)
+
+    if has_vmax:
+        fig.add_trace(go.Scatter(
+            x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
+            mode='lines+markers', name='D-max',
+            line=dict(color=FARBE_VMAX, width=2),
+            yaxis=active_yaxis,
+        ))
+    if has_amax_falling:
+        fig.add_trace(go.Scatter(
+            x=[t_amax_falling], y=[y_amax_falling],
+            mode='markers', name='D2-max',
+            marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
+                        line=dict(color=FARBE_AMAX, width=2)),
+            yaxis=active_yaxis,
+        ))
+    if has_amax_rising:
+        fig.add_trace(go.Scatter(
+            x=[t_amax_rising], y=[y_amax_rising],
+            mode='markers', name='D2-min',
+            marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
+                        line=dict(color=FARBE_AMAX, width=2)),
+            yaxis=active_yaxis,
+        ))
+
+    if sop_linien:
+        erste_sichtbar = True
+        for t_sop, t0, t1, y_lvl in sop_linien:
+            if not (min_zeit <= t_sop <= max_zeit):
+                continue
+            fig.add_trace(go.Scatter(
+                x=[max(t0, min_zeit), min(t1, max_zeit)], y=[y_lvl, y_lvl],
+                mode='lines',
+                name='SOP' if erste_sichtbar else None,
+                showlegend=erste_sichtbar,
+                line=dict(color=FARBE_D, width=2),
+                yaxis=active_yaxis,
+            ))
+            fig.add_trace(go.Scatter(
+                x=[t_sop], y=[y_lvl],
+                mode='markers', showlegend=False,
+                marker=dict(color=FARBE_D, size=14, symbol='x',
+                            line=dict(color=FARBE_D, width=2)),
+                yaxis=active_yaxis,
+            ))
+            erste_sichtbar = False
+
+    if show_velocity and velocity is not None:
+        fig.add_trace(go.Scatter(
+            x=df_plot['Zeit (ms)'], y=velocity,
+            name='D', yaxis=v_yaxis, line=dict(color=FARBE_D),
+        ))
+    if show_acceleration and acceleration is not None:
+        fig.add_trace(go.Scatter(
+            x=df_plot['Zeit (ms)'], y=acceleration,
+            name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
+        ))
+
+    if show_integral:
+        _mask = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
+        _df_int = df_plot[_mask]
+        if len(_df_int) > 0:
+            _zeichne_integral_flaeche(
+                fig, _df_int['Zeit (ms)'].values, _df_int[active_sensor].values,
+                yaxis=active_yaxis,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -420,150 +543,71 @@ def build_chart_png(
     if kanal_einheit_map is None:
         kanal_einheit_map = {n: 'µm' for n in sensor_namen}
 
-    _aktiv_e_e = kanal_einheit_map.get(active_sensor, 'µm')
-    v_einheit_e, a_einheit_e, v_faktor_e, a_faktor_e = _ableit_info(_aktiv_e_e, zeit_einheit)
+    _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
+    v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, zeit_einheit)
 
-    # Y-Achse: 15 % Puffer – nur Kanäle der primären Einheit berücksichtigen
-    _prim_e = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sensor_namen)), 'µm')
-    _prim_n = [n for n in sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_e] or sensor_namen
-    y_max_e   = float(df[_prim_n].max().max())
-    y_min_e   = float(df[_prim_n].min().min())
-    y_range_e = [y_min_e, y_max_e + (y_max_e - y_min_e) * 0.15]
+    _prim_einheit = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sensor_namen)), 'µm')
+    _prim_namen   = [n for n in sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_einheit] or sensor_namen
+    y_max   = float(df[_prim_namen].max().max())
+    y_min   = float(df[_prim_namen].min().min())
+    y_range = [y_min, y_max + (y_max - y_min) * Y_PUFFER]
 
-    # Ableitungen für Export-Diagramm berechnen
     velocity = acceleration = None
     if len(df) > 1:
         arr  = df[active_sensor].values
         dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / hz_faktor
         if show_velocity:
             roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
-            velocity = roh * v_faktor_e if roh is not None else None
+            velocity = roh * v_faktor if roh is not None else None
         if show_acceleration:
             roh = reader.berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
-            acceleration = roh * a_faktor_e if roh is not None else None
-
-    velocity_ok_e     = velocity is not None
-    acceleration_ok_e = acceleration is not None
-    _alle_e = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
-    _kanal_farbe_e = {name: KANAL_FARBEN[_alle_e.index(name) if name in _alle_e else 0]
-                     for name in sensor_namen}
-    _kanal_bereiche_e: dict[str, tuple[float, float]] = {
-        n: (float(df[n].min()), float(df[n].max())) for n in sensor_namen if n in df.columns
-    }
-    kanal_zu_yaxis_e, layout_yachsen_e, v_yaxis_e, a_yaxis_e, x_domain_end_e = _yachsen_layout(
-        sensor_namen, kanal_einheit_map, y_range_e,
-        show_velocity, velocity_ok_e, show_acceleration, acceleration_ok_e,
-        v_einheit=v_einheit_e, a_einheit=a_einheit_e,
-        kanal_farbe_map=_kanal_farbe_e,
-        kanal_bereiche=_kanal_bereiche_e,
-        kanal_ch_num=kanal_ch_num,
-    )
-    active_yaxis_e = kanal_zu_yaxis_e.get(active_sensor, 'y')
-
-    export_fig = go.Figure()
+            acceleration = roh * a_faktor if roh is not None else None
 
     _alle = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
-    for name in sensor_namen:
-        _ci = _alle.index(name) if name in _alle else 0
-        export_fig.add_trace(go.Scatter(
-            x=df['Zeit (ms)'], y=df[name],
-            name=name, line=dict(color=KANAL_FARBEN[_ci]),
-            yaxis=kanal_zu_yaxis_e.get(name, 'y'),
-        ))
+    _kanal_farbe_map = {name: KANAL_FARBEN[_alle.index(name) if name in _alle else 0]
+                        for name in sensor_namen}
+    _kanal_bereiche: dict[str, tuple[float, float]] = {
+        n: (float(df[n].min()), float(df[n].max())) for n in sensor_namen if n in df.columns
+    }
+    kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
+        sensor_namen, kanal_einheit_map, y_range,
+        show_velocity, velocity is not None,
+        show_acceleration, acceleration is not None,
+        v_einheit=v_einheit, a_einheit=a_einheit,
+        kanal_farbe_map=_kanal_farbe_map,
+        kanal_bereiche=_kanal_bereiche,
+        kanal_ch_num=kanal_ch_num,
+    )
+    active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
-    export_fig.add_vline(x=xa, line_dash="dash", line_color=FARBE_CURSOR)
-    export_fig.add_vline(x=xb, line_dash="dash", line_color=FARBE_CURSOR)
+    export_fig = go.Figure()
+    t_min = float(df['Zeit (ms)'].min())
+    t_max = float(df['Zeit (ms)'].max())
 
-    if show_v_avg:
-        export_fig.add_trace(go.Scatter(
-            x=[xa, xb], y=[ya, yb],
-            mode='lines+markers', name='Schnittlinie',
-            line=dict(color=FARBE_V_SCHNITT, width=2, dash='dot'),
-            yaxis=active_yaxis_e,
-        ))
-
-    if rect_fit is not None:
-        _zeichne_rechteck_fit(
-            export_fig, rect_fit,
-            df['Zeit (ms)'].min(), df['Zeit (ms)'].max(),
-            mit_fuellung=show_rect_fit, yaxis=active_yaxis_e,
-        )
-
-    if has_vmax and t_vmax_start is not None:
-        export_fig.add_trace(go.Scatter(
-            x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
-            mode='lines+markers', name='D-max',
-            line=dict(color=FARBE_VMAX, width=2),
-            yaxis=active_yaxis_e,
-        ))
-    if has_amax_falling and t_amax_falling is not None:
-        export_fig.add_trace(go.Scatter(
-            x=[t_amax_falling], y=[y_amax_falling],
-            mode='markers', name='D2-max',
-            marker=dict(color=FARBE_AMAX, size=14, symbol='cross',
-                        line=dict(color=FARBE_AMAX, width=2)),
-            yaxis=active_yaxis_e,
-        ))
-    if has_amax_rising and t_amax_rising is not None:
-        export_fig.add_trace(go.Scatter(
-            x=[t_amax_rising], y=[y_amax_rising],
-            mode='markers', name='D2-min',
-            marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
-                        line=dict(color=FARBE_AMAX, width=2)),
-            yaxis=active_yaxis_e,
-        ))
-    if sop_linien:
-        t_min_export   = float(df['Zeit (ms)'].min())
-        t_max_export   = float(df['Zeit (ms)'].max())
-        erste_sichtbar = True
-        for t_sop, t0, t1, y_lvl in sop_linien:
-            if not (t_min_export <= t_sop <= t_max_export):
-                continue
-            export_fig.add_trace(go.Scatter(
-                x=[max(t0, t_min_export), min(t1, t_max_export)], y=[y_lvl, y_lvl],
-                mode='lines',
-                name='SOP' if erste_sichtbar else None,
-                showlegend=erste_sichtbar,
-                line=dict(color=FARBE_D, width=2),
-                yaxis=active_yaxis_e,
-            ))
-            export_fig.add_trace(go.Scatter(
-                x=[t_sop], y=[y_lvl],
-                mode='markers', showlegend=False,
-                marker=dict(color=FARBE_D, size=14, symbol='x',
-                            line=dict(color=FARBE_D, width=2)),
-                yaxis=active_yaxis_e,
-            ))
-            erste_sichtbar = False
-    if show_velocity and velocity is not None:
-        export_fig.add_trace(go.Scatter(
-            x=df['Zeit (ms)'], y=velocity,
-            name='D', yaxis=v_yaxis_e, line=dict(color=FARBE_D),
-        ))
-    if show_acceleration and acceleration is not None:
-        export_fig.add_trace(go.Scatter(
-            x=df['Zeit (ms)'], y=acceleration,
-            name='D2', yaxis=a_yaxis_e, line=dict(color=FARBE_D2),
-        ))
-    if show_integral:
-        _mask_e = (df['Zeit (ms)'] >= xa) & (df['Zeit (ms)'] <= xb)
-        _df_int_e = df[_mask_e]
-        if len(_df_int_e) > 0:
-            _zeichne_integral_flaeche(
-                export_fig,
-                _df_int_e['Zeit (ms)'].values, _df_int_e[active_sensor].values,
-                yaxis=active_yaxis_e,
-            )
+    _baue_traces(
+        export_fig, df, sensor_namen,
+        kanal_zu_yaxis, active_sensor, active_yaxis,
+        _alle,
+        xa, xb, ya, yb, t_min, t_max,
+        show_v_avg, rect_fit, show_rect_fit,
+        has_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+        has_amax_falling, t_amax_falling, y_amax_falling,
+        has_amax_rising, t_amax_rising, y_amax_rising,
+        sop_linien or [],
+        show_velocity, velocity, v_yaxis,
+        show_acceleration, acceleration, a_yaxis,
+        show_integral,
+    )
 
     export_fig.update_layout(
         xaxis_title=f"Zeit ({zeit_einheit})",
         height=500,
         hovermode="x unified",
         legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-        xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end_e]),
+        xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end]),
         plot_bgcolor='white',
         paper_bgcolor='white',
-        **layout_yachsen_e,
+        **layout_yachsen,
     )
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
 
@@ -616,7 +660,6 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
         Spacer(1, 4*mm),
     ]
 
-    # Kenngrößen auf zwei gleichbreite Reihen aufteilen
     items               = list(metrics.items())
     halb                = (len(items) + 1) // 2
     kenngroessen_oben   = items[:halb]
