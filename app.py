@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.01"
+VERSION = "v1.01.03"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -97,6 +97,7 @@ _CH_NAMEN_DEFAULT  = ['Festo', 'DST'] + [''] * (N_KANÄLE - 2)
 _OSC_SKALE_DEFAULT = [1.0, 1.0, 100.0] + [1.0] * (N_KANÄLE - 3)
 
 defaults = {
+    'file_type_radio': 'CSV plain',
     'xa': 0.0,        # freie Wahrheitsquelle – nie Widget-Key
     'xb': 0.001,      # freie Wahrheitsquelle – nie Widget-Key
     'xa_sw': 0.0,     # Widget-Key: Slider XA
@@ -122,6 +123,8 @@ defaults = {
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
+    'show_multi_kanal': False,
+    'multi_kanal_auswahl': [],
     'v_axis_min': -3_200,
     'v_axis_max':  3_200,
     'a_axis_min': -20_000,
@@ -166,6 +169,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
     'show_integral',
+    'show_multi_kanal', 'multi_kanal_auswahl',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
 ]
 for _i in range(1, N_KANÄLE + 1):
@@ -325,14 +329,14 @@ def _setze_cursor_position(total_time_ms: float) -> None:
 
 def _fmt_zeit(value: float, einheit: str) -> str:
     """Formatiert Zeitwert mit automatisch gewählter Einheit (s/ms/µs/ns).
-    Wechselt die Einheit wenn mehr als 3 Dezimal- oder Vorkommastellen nötig.
+    Wechselt auf die nächst-kleinere Einheit sobald der Wert unter 0,9 liegt.
     """
     val_s = value * _ZEIT_TO_S.get(einheit, 1e-3)
     if val_s == 0:
         return f"0.000 {einheit}"
     for unit in ('s', 'ms', 'µs', 'ns'):
         scaled = abs(val_s) / _ZEIT_TO_S[unit]
-        if scaled >= 0.001:
+        if scaled >= 0.9:
             prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
             return f"{val_s / _ZEIT_TO_S[unit]:{prec}} {unit}"
     return f"{val_s / _ZEIT_TO_S['ns']:.3f} ns"
@@ -372,7 +376,7 @@ def _fmt_integral(value_raw: float, aktiv_einheit: str, zeit_einheit: str) -> st
     abs_si = abs(val_si)
     for unit in ('s', 'ms', 'µs', 'ns'):
         scaled = abs_si / _ZEIT_TO_S[unit]
-        if scaled >= 0.001:
+        if scaled >= 0.9:
             prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
             return f"{val_si / _ZEIT_TO_S[unit]:{prec}} {aktiv_einheit}·{unit}"
     return f"{val_si / _ZEIT_TO_S['ns']:.3f} {aktiv_einheit}·ns"
@@ -717,17 +721,17 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                               key=f'ch{_i}_ymin', label_visibility="collapsed")
             _gc2.number_input(f"max {_ch_name}", step=1.0, format="%.2f",
                               key=f'ch{_i}_ymax', label_visibility="collapsed")
-        st.caption("D (1. Ableitung)")
+        st.caption("dIN1/dt")
         _vc1, _vc2 = st.columns(2)
-        _vc1.number_input("min (D)", step=100.0, format="%.0f",
+        _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
                           key="v_axis_min", label_visibility="collapsed")
-        _vc2.number_input("max (D)", step=100.0, format="%.0f",
+        _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
                           key="v_axis_max", label_visibility="collapsed")
-        st.caption("D2 (2. Ableitung)")
+        st.caption("d²IN1/dt²")
         _ac1, _ac2 = st.columns(2)
-        _ac1.number_input("min (D2)", step=500.0, format="%.0f",
+        _ac1.number_input("min d²IN1/dt²", step=500.0, format="%.0f",
                           key="a_axis_min", label_visibility="collapsed")
-        _ac2.number_input("max (D2)", step=500.0, format="%.0f",
+        _ac2.number_input("max d²IN1/dt²", step=500.0, format="%.0f",
                           key="a_axis_max", label_visibility="collapsed")
 
     with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern", on_change=_SUB_EXPANDER_CBS['sub_speichern']):
@@ -890,7 +894,7 @@ st.sidebar.header("2. Auswertung")
 active_sensor = st.sidebar.radio(
     "Kanal für Messung:", sensor_namen,
     horizontal=True, label_visibility="collapsed",
-    help="Aktiver Kanal für alle Berechnungen: Cursor-Messung, D-max, D2-max und SOP.",
+    help="Aktiver Kanal (IN1) für alle Berechnungen: Cursor-Messung, d/dt-max, d²/dt²-max und SOP.",
 )
 
 st.sidebar.caption("Anzeige", help="Kanäle ein-/ausblenden. Der aktive Mess-Kanal ist immer sichtbar.")
@@ -931,13 +935,13 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
         f"Zeit XA ({_zeit_einheit})", min_zeit, max_zeit,
         step=0.001, format="%.3f",
         key="xa_nw", on_change=update_xa_from_num,
-        help=f"Linker Zeitcursor ({_zeit_einheit}) – Startpunkt für Δt, Δs und D (A-B).",
+        help=f"Linker Zeitcursor ({_zeit_einheit}) – Startpunkt für Δt, Δs und d/dt (A-B).",
     )
     st.number_input(
         f"Zeit XB ({_zeit_einheit})", min_zeit, max_zeit,
         step=0.001, format="%.3f",
         key="xb_nw", on_change=update_xb_from_num,
-        help=f"Rechter Zeitcursor ({_zeit_einheit}) – Endpunkt für Δt, Δs und D (A-B).",
+        help=f"Rechter Zeitcursor ({_zeit_einheit}) – Endpunkt für Δt, Δs und d/dt (A-B).",
     )
     if xa > xb:
         st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
@@ -961,26 +965,26 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
                "%.2f" if _tb_mag >= 0.1 else
                "%.4f" if _tb_mag >= 0.001 else "%.6f")
     _v_tb_display = st.slider(
-        f"Zeitbasis D-max ({_tb_s_einheit})",
+        f"Zeitbasis d/dt-max ({_tb_s_einheit})",
         _tb_min_d, _tb_max_d, _tb_def_d,
         step=_tb_step_d, format=f"{_tb_fmt} {_tb_s_einheit}",
-        help="Mittelungsfenster für D-max, D2-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
+        help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
     v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
 
 show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", key="show_v_avg",
-                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate D (A-B).")
+                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate dIN1/dt (A-B).")
 show_rect_fit = st.sidebar.toggle(
     "Rechteck-Fit füllen", key="show_rect_fit",
     help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
 show_integral = st.sidebar.toggle(
-    "I anzeigen (Integration)", key="show_integral",
-    help="Zeichnet die Fläche unter der aktiven Kurve zwischen XA und XB transparent ein.",
+    "∫ dt (A-B) anzeigen", key="show_integral",
+    help="Integriert den aktiven Kanal und Zeichnet die Fläche zwischen XA und XB transparent ein.",
 )
 show_velocity = st.sidebar.toggle(
-    "D anzeigen (1. Ableitung)", key="show_velocity",
-    help="Zeigt die 1. Ableitung des aktiven Kanals auf einer zweiten Y-Achse rechts.",
+    f"d{active_sensor}/dt anzeigen", key="show_velocity",
+    help="Zeigt die 1. Ableitung (Geschwindigkeit) des aktiven Kanals auf einer zweiten Y-Achse.",
 )
 if show_velocity:
     st.sidebar.slider(
@@ -989,8 +993,8 @@ if show_velocity:
         help="Fenstergröße des Savitzky-Golay-Filters für die 1. Ableitung. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
-    "D2 anzeigen (2. Ableitung)", key="show_acceleration",
-    help="Zeigt die 2. Ableitung des aktiven Kanals auf einer dritten Y-Achse rechts.",
+    f"d²{active_sensor}/dt² anzeigen", key="show_acceleration",
+    help="Zeigt die 2. Ableitung (Beschleunigung) des aktiven Kanals auf einer dritten Y-Achse.",
 )
 if show_acceleration:
     st.sidebar.slider(
@@ -1001,13 +1005,29 @@ if show_acceleration:
 
 show_sop = st.sidebar.toggle(
     "Speed on Point (SOP)", key="show_sop",
-    help="Misst die Geschwindigkeit an der steigenden Flanke des Rechtecksignals auf einem einstellbaren Hub-Pegel. Erfordert erkanntes Rechteck-Fit.",
+    help="Zeigt die Geschwindigkeit an der steigenden Flanke des Rechtecksignals an einem einstellbaren Hub. Erfordert erkanntes Rechteck-Fit.",
 )
 if show_sop:
     st.sidebar.slider(
         "SOP Pegel (%)", 0, 100, step=1,
         key="sop_percent",
         help="Höhe auf der steigenden Flanke in Prozent des Hub (0 % = unterer Pegel, 100 % = oberer Pegel).",
+    )
+
+show_multi_kanal = st.sidebar.toggle(
+    "∫ IN1×IN2 dt (A-B)", key="show_multi_kanal",
+    help="Multipliziert zwei Kanäle und integriert das Produkt zwischen XA und XB. Anwendung z. B.: Strom × Spannung → VA·s.",
+)
+if show_multi_kanal:
+    # Ungültige Vorauswahl (z. B. aus vorheriger Datei) bereinigen
+    _valid_multi = [c for c in st.session_state.get('multi_kanal_auswahl', []) if c in sensor_namen]
+    if _valid_multi != list(st.session_state.get('multi_kanal_auswahl', [])):
+        st.session_state['multi_kanal_auswahl'] = _valid_multi
+    st.sidebar.multiselect(
+        "Kanäle wählen (genau 2)",
+        options=sensor_namen,
+        key="multi_kanal_auswahl",
+        help="2 Kanäle für die Multiplikation auswählen.",
     )
 
 rect_fit = compute_best_fit_rectangle(
@@ -1062,6 +1082,16 @@ if idx_end > idx_start:
     integral_val = float(np.trapezoid(_y_int, _t_int))   # [aktiv_einheit × zeit_einheit]
 else:
     integral_val = 0.0
+
+# Kanal-Multiplikation und Integration zwischen XA und XB (Trapezregel, volle Auflösung)
+multi_integral_val  = float('nan')
+_multi_auswahl      = st.session_state.get('multi_kanal_auswahl', [])
+if show_multi_kanal and len(_multi_auswahl) == 2:
+    _mc_a, _mc_b = _multi_auswahl
+    if _mc_a in df.columns and _mc_b in df.columns and idx_end > idx_start:
+        _t_mi   = df.loc[idx_start:idx_end, 'Zeit (ms)'].values
+        _y_mi   = df.loc[idx_start:idx_end, _mc_a].values * df.loc[idx_start:idx_end, _mc_b].values
+        multi_integral_val = float(np.trapezoid(_y_mi, _t_mi))  # [einh_A × einh_B × zeit_einheit]
 
 # ---------------------------------------------------------------------------
 # SG-ABLEITUNGEN – einmalig auf vollem Datensatz (Messwerte + Diagramm)
@@ -1304,18 +1334,31 @@ z2.metric("Frequenz Δt (A-B)", _fmt_freq(freq_hz))
 z3.metric("Δs (A-B)",          _fmt_val(dy, _aktiv_einheit))
 z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub) else "N/A")
 
-# Zeile 2 – D (1. Ableitung)
+# Zeile 2 – 1. Ableitung
 g1, g2, g3, g4 = st.columns(4)
-g1.metric("D (A-B)",           _fmt_val(v_avg, v_einheit))
-g2.metric("ΔD (A-B)",          _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric("D max (Peak)",      _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
-g4.metric("SOP",               _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
+g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
+g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric(f"d{active_sensor}/dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
+g4.metric("SOP",                          _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
 
-# Zeile 3 – D2 (2. Ableitung) + Integral
+# Zeile 3 – 2. Ableitung + Integral
 a1, a2, a3 = st.columns(3)
-a1.metric("D2 max Fall.",      _fmt_val(a_max_falling, a_einheit)  if not np.isnan(a_max_falling) else "N/A")
-a2.metric("D2 min Rise.",      _fmt_val(a_min_rising, a_einheit)   if not np.isnan(a_min_rising) else "N/A")
-a3.metric("∫ (A-B)",           _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
+a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
+a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
+a3.metric(f"∫{active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
+
+# Zeile 4 – Kanal-Multiplikation (nur wenn aktiviert)
+if show_multi_kanal:
+    _mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
+    if len(_mc_auswahl) == 2:
+        _mc_einh_a   = kanal_einheit_map.get(_mc_auswahl[0], '?')
+        _mc_einh_b   = kanal_einheit_map.get(_mc_auswahl[1], '?')
+        _mc_label    = f"∫ {_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)"
+        _mc_fmt      = _fmt_integral(multi_integral_val, f"{_mc_einh_a}·{_mc_einh_b}", _zeit_einheit)
+        m1, *_ = st.columns(4)
+        m1.metric(_mc_label, _mc_fmt)
+    else:
+        st.info(f"Multi. Kanal: {len(_mc_auswahl)} von 2 Kanälen ausgewählt – bitte genau 2 wählen.", icon="ℹ️")
 
 # ---------------------------------------------------------------------------
 # EXPORT
@@ -1324,23 +1367,32 @@ a3.metric("∫ (A-B)",           _fmt_integral(integral_val, _aktiv_einheit, _ze
 st.sidebar.header("3. Export")
 metrics = {
     # Zeit & Signal
-    f"XA ({_zeit_einheit})":    _fmt_zeit(xa, _zeit_einheit),
-    f"XB ({_zeit_einheit})":    _fmt_zeit(xb, _zeit_einheit),
+    "XA":                       _fmt_zeit(xa, _zeit_einheit),
+    "XB":                       _fmt_zeit(xb, _zeit_einheit),
     "Δt (A-B)":                 _fmt_zeit(dt_val_ms, _zeit_einheit),
     "Frequenz Δt (A-B)":        _fmt_freq(freq_hz),
     "Δs (A-B)":                 _fmt_val(dy, _aktiv_einheit),
     "Hub Best-fit":             _fmt_val(hub, _aktiv_einheit)              if not np.isnan(hub) else "N/A",
-    # D (1. Ableitung)
-    "D (A-B)":                  _fmt_val(v_avg, v_einheit),
-    "ΔD (A-B)":                 _fmt_val(v_cursor_delta, v_einheit)        if not np.isnan(v_cursor_delta) else "N/A",
-    "D max (Peak)":             _fmt_val(v_max, v_einheit)                 if not np.isnan(v_max) else "N/A",
-    "SOP":                      _fmt_val(v_sop, v_einheit)                 if not np.isnan(v_sop) else "N/A",
-    # D2 (2. Ableitung)
-    "D2 max Fall.":             _fmt_val(a_max_falling, a_einheit)         if not np.isnan(a_max_falling) else "N/A",
-    "D2 min Rise.":             _fmt_val(a_min_rising, a_einheit)          if not np.isnan(a_min_rising) else "N/A",
+    # 1. Ableitung
+    f"d{active_sensor}/dt (A-B)":   _fmt_val(v_avg, v_einheit),
+    f"Δd{active_sensor}/dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
+    f"d{active_sensor}/dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
+    "SOP":                          _fmt_val(v_sop, v_einheit)            if not np.isnan(v_sop) else "N/A",
+    # 2. Ableitung
+    f"d²{active_sensor}/dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
+    f"d²{active_sensor}/dt² min Rise.": _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A",
     # Integral
-    "∫ (A-B)":                  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
+    f"∫{active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
+# Multi-Kanal-Integral in Export aufnehmen (nur wenn Ergebnis vorhanden)
+if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 2:
+    _mc_a_exp   = st.session_state['multi_kanal_auswahl'][0]
+    _mc_b_exp   = st.session_state['multi_kanal_auswahl'][1]
+    _mc_ea_exp  = kanal_einheit_map.get(_mc_a_exp, '?')
+    _mc_eb_exp  = kanal_einheit_map.get(_mc_b_exp, '?')
+    metrics[f"∫ {_mc_a_exp}×{_mc_b_exp} dt (A-B)"] = _fmt_integral(
+        multi_integral_val, f"{_mc_ea_exp}·{_mc_eb_exp}", _zeit_einheit
+    )
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
     help="PDF enthält Diagramm und Kenngrößen-Tabelle; PNG ist nur das Diagramm.",
