@@ -723,9 +723,9 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                               key=f'ch{_i}_ymax', label_visibility="collapsed")
         st.caption("dIN1/dt")
         _vc1, _vc2 = st.columns(2)
-        _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
+        _vc1.number_input("min d²IN1/dt", step=100.0, format="%.0f",
                           key="v_axis_min", label_visibility="collapsed")
-        _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
+        _vc2.number_input("max d²IN1/dt", step=100.0, format="%.0f",
                           key="v_axis_max", label_visibility="collapsed")
         st.caption("d²IN1/dt²")
         _ac1, _ac2 = st.columns(2)
@@ -979,11 +979,11 @@ show_rect_fit = st.sidebar.toggle(
     help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
 )
 show_integral = st.sidebar.toggle(
-    "∫ dt (A-B) anzeigen", key="show_integral",
+    f"∫ d {active_sensor} dt (A-B) anzeigen", key="show_integral",
     help="Integriert den aktiven Kanal und Zeichnet die Fläche zwischen XA und XB transparent ein.",
 )
 show_velocity = st.sidebar.toggle(
-    f"d{active_sensor}/dt anzeigen", key="show_velocity",
+    f"d {active_sensor} /dt anzeigen", key="show_velocity",
     help="Zeigt die 1. Ableitung (Geschwindigkeit) des aktiven Kanals auf einer zweiten Y-Achse.",
 )
 if show_velocity:
@@ -993,7 +993,7 @@ if show_velocity:
         help="Fenstergröße des Savitzky-Golay-Filters für die 1. Ableitung. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
-    f"d²{active_sensor}/dt² anzeigen", key="show_acceleration",
+    f"d² {active_sensor} /dt² anzeigen", key="show_acceleration",
     help="Zeigt die 2. Ableitung (Beschleunigung) des aktiven Kanals auf einer dritten Y-Achse.",
 )
 if show_acceleration:
@@ -1336,16 +1336,16 @@ z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub
 
 # Zeile 2 – 1. Ableitung
 g1, g2, g3, g4 = st.columns(4)
-g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
-g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric(f"d{active_sensor}/dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
+g1.metric(f"d {active_sensor} /dt (A-B)",   _fmt_val(v_avg, v_einheit))
+g2.metric(f"Δd {active_sensor} /dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric(f"d {active_sensor} /dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
 g4.metric("SOP",                          _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
 
 # Zeile 3 – 2. Ableitung + Integral
 a1, a2, a3 = st.columns(3)
-a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
-a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
-a3.metric(f"∫{active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
+a1.metric(f"d² {active_sensor} /dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
+a2.metric(f"d² {active_sensor} /dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
+a3.metric(f"∫ {active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
 
 # Zeile 4 – Kanal-Multiplikation (nur wenn aktiviert)
 if show_multi_kanal:
@@ -1374,15 +1374,15 @@ metrics = {
     "Δs (A-B)":                 _fmt_val(dy, _aktiv_einheit),
     "Hub Best-fit":             _fmt_val(hub, _aktiv_einheit)              if not np.isnan(hub) else "N/A",
     # 1. Ableitung
-    f"d{active_sensor}/dt (A-B)":   _fmt_val(v_avg, v_einheit),
-    f"Δd{active_sensor}/dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
-    f"d{active_sensor}/dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
+    f"d {active_sensor} /dt (A-B)":   _fmt_val(v_avg, v_einheit),
+    f"Δd {active_sensor} /dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
+    f"d {active_sensor} /dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
     "SOP":                          _fmt_val(v_sop, v_einheit)            if not np.isnan(v_sop) else "N/A",
     # 2. Ableitung
-    f"d²{active_sensor}/dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
-    f"d²{active_sensor}/dt² min Rise.": _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A",
+    f"d² {active_sensor} /dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
+    f"d² {active_sensor} /dt² min Rise.": _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A",
     # Integral
-    f"∫{active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
+    f"∫ {active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
 # Multi-Kanal-Integral in Export aufnehmen (nur wenn Ergebnis vorhanden)
 if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 2:
