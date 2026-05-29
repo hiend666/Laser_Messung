@@ -123,6 +123,7 @@ defaults = {
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
+    'off_fein': False,
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
     'show_widerstand_integral': False,
@@ -172,6 +173,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
     'show_integral',
+    'off_fein',
     'show_multi_kanal', 'multi_kanal_auswahl',
     'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
@@ -690,7 +692,9 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     st.session_state[f'off{_ri}_slider'] = 0.0
                 st.rerun()
 
-            st.markdown("")
+            st.toggle("Fein (÷10)", key="off_fein",
+                      help="Verfeinert die Slider-Schrittweite um Faktor 10 für präzise Einstellung.")
+            _fein = st.session_state.get('off_fein', False)
             for i, name in enumerate(sensor_namen):
                 _raw_col  = df_raw[name]
                 _off_lim  = max(Y_OFFSET_LIMIT_MIN,
@@ -700,10 +704,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 _off_step = (0.1   if _off_lim <= SLIDER_STEP_SCHWELLEN[0] else
                              1.0   if _off_lim <= SLIDER_STEP_SCHWELLEN[1] else
                              10.0  if _off_lim <= SLIDER_STEP_SCHWELLEN[2] else 100.0)
+                if _fein:
+                    _off_step /= 10.0
                 st.slider(
                     name, -_off_lim, _off_lim, step=_off_step,
                     key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
-                    help=f"Y-Versatz für diesen Kanal (Bereich ±{_off_lim:.0f}).",
+                    help=f"Y-Versatz für diesen Kanal (Bereich ±{_off_lim:.0f}, Schritt {_off_step:.4g}).",
                 )
 
     with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset", on_change=_SUB_EXPANDER_CBS['sub_xoffset']):
