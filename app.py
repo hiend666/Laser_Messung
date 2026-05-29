@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.03"
+VERSION = "v1.01.04"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -125,6 +125,9 @@ defaults = {
     'show_integral': False,
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
+    'show_widerstand_integral': False,
+    'widerstand_kohm': 200.0,
+    'widerstand_kanal': '',
     'v_axis_min': -3_200,
     'v_axis_max':  3_200,
     'a_axis_min': -20_000,
@@ -170,6 +173,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_sop', 'sop_percent',
     'show_integral',
     'show_multi_kanal', 'multi_kanal_auswahl',
+    'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
 ]
 for _i in range(1, N_KANÄLE + 1):
@@ -1034,6 +1038,33 @@ if show_multi_kanal:
         help="2 Kanäle für die Multiplikation auswählen.",
     )
 
+_SPANNUNG_ZU_V = {'V': 1.0, 'mV': 1e-3}
+show_widerstand_integral = st.sidebar.toggle(
+    "∫U/R dt (A-B)", key="show_widerstand_integral",
+    help="Integriert den berechneten Strom I=U/R zwischen XA und XB. Spannungskanal wählen und Widerstand angeben.",
+)
+if show_widerstand_integral:
+    _u_kanäle = [n for n in sensor_namen if kanal_einheit_map.get(n, '') in _SPANNUNG_ZU_V]
+    if _u_kanäle:
+        if st.session_state.get('widerstand_kanal', '') not in _u_kanäle:
+            st.session_state['widerstand_kanal'] = _u_kanäle[0]
+        st.sidebar.selectbox(
+            "Spannungskanal",
+            options=_u_kanäle,
+            key="widerstand_kanal",
+            help="Kanal mit Spannungseinheit (V/mV) für I = U / R.",
+        )
+        st.sidebar.number_input(
+            "Widerstand (kΩ)",
+            min_value=0.001,
+            step=1.0,
+            format="%.3f",
+            key="widerstand_kohm",
+            help="Widerstandswert in kΩ. Standard: 200 kΩ.",
+        )
+    else:
+        st.sidebar.caption("Kein Kanal mit Spannungseinheit (V/mV) verfügbar.")
+
 rect_fit = compute_best_fit_rectangle(
     df_use['Zeit (ms)'].values,
     df_use[active_sensor].values,
@@ -1096,6 +1127,19 @@ if show_multi_kanal and len(_multi_auswahl) == 2:
         _t_mi   = df.loc[idx_start:idx_end, 'Zeit (ms)'].values
         _y_mi   = df.loc[idx_start:idx_end, _mc_a].values * df.loc[idx_start:idx_end, _mc_b].values
         multi_integral_val = float(np.trapezoid(_y_mi, _t_mi))  # [einh_A × einh_B × zeit_einheit]
+
+# Widerstands-Integral: ∫(U/R) dt zwischen XA und XB (Trapezregel, volle Auflösung)
+widerstand_integral_val = float('nan')
+_w_kanal = st.session_state.get('widerstand_kanal', '')
+_w_kohm  = float(st.session_state.get('widerstand_kohm', 200.0))
+if show_widerstand_integral and _w_kanal in df.columns and _w_kohm > 0 and idx_end > idx_start:
+    _w_einh   = kanal_einheit_map.get(_w_kanal, 'V')
+    _u_zu_v   = _SPANNUNG_ZU_V.get(_w_einh, 1.0)
+    _r_ohm    = _w_kohm * 1_000.0
+    _t_wi     = df.loc[idx_start:idx_end, 'Zeit (ms)'].values
+    _u_wi     = df.loc[idx_start:idx_end, _w_kanal].values
+    _i_wi     = (_u_wi * _u_zu_v) / _r_ohm           # A
+    widerstand_integral_val = float(np.trapezoid(_i_wi, _t_wi))  # [A × zeit_einheit]
 
 # ---------------------------------------------------------------------------
 # SG-ABLEITUNGEN – einmalig auf vollem Datensatz (Messwerte + Diagramm)
@@ -1357,6 +1401,16 @@ if show_multi_kanal and len(_mc_auswahl) == 2:
     a4.metric(f"∫{_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)",
               _fmt_integral(multi_integral_val, f"{_mc_einh_a}·{_mc_einh_b}", _zeit_einheit))
 
+# Zeile 4 – Widerstands-Integral (nur wenn aktiviert)
+if show_widerstand_integral and _w_kanal:
+    _w_kohm_d = float(st.session_state.get('widerstand_kohm', 200.0))
+    w1, *_ = st.columns(4)
+    w1.metric(
+        f"∫{_w_kanal}/R dt (A-B)",
+        _fmt_integral(widerstand_integral_val, 'A', _zeit_einheit),
+        help=f"I = U_{_w_kanal} / {_w_kohm_d:.3g} kΩ",
+    )
+
 # ---------------------------------------------------------------------------
 # EXPORT
 # ---------------------------------------------------------------------------
@@ -1389,6 +1443,11 @@ if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 
     _mc_eb_exp  = kanal_einheit_map.get(_mc_b_exp, '?')
     metrics[f"∫ {_mc_a_exp}×{_mc_b_exp} dt (A-B)"] = _fmt_integral(
         multi_integral_val, f"{_mc_ea_exp}·{_mc_eb_exp}", _zeit_einheit
+    )
+if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_val):
+    _w_kohm_exp = float(st.session_state.get('widerstand_kohm', 200.0))
+    metrics[f"∫{_w_kanal}/R dt (A-B) [R={_w_kohm_exp:.3g} kΩ]"] = _fmt_integral(
+        widerstand_integral_val, 'A', _zeit_einheit
     )
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
