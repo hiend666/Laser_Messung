@@ -337,7 +337,7 @@ def _fmt_zeit(value: float, einheit: str) -> str:
     for unit in ('s', 'ms', 'µs', 'ns'):
         scaled = abs(val_s) / _ZEIT_TO_S[unit]
         if scaled >= 0.9:
-            prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
+            prec = ".0f" if scaled >= 100_000 else ".1f" if scaled >= 10_000 else ".2f" if scaled >= 1_000 else ".3f"
             return f"{val_s / _ZEIT_TO_S[unit]:{prec}} {unit}"
     return f"{val_s / _ZEIT_TO_S['ns']:.3f} ns"
 
@@ -357,13 +357,17 @@ def _fmt_freq(value_hz: float) -> str:
 
 
 def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
-    """Formatiert Messwert: bei sehr kleinen/großen Absolutwerten SI-Prefix wählen."""
+    """Formatiert Messwert mit max. 6 Gesamtziffern (Vor- + Nachkommastellen)."""
     if np.isnan(value):
         return "N/A"
     abs_v = abs(value)
-    if abs_v == 0 or (0.001 <= abs_v < 10_000):
-        return f"{value:.{prec}f} {einheit}"
-    return f"{value:.{prec}e} {einheit}"
+    if abs_v == 0:
+        return f"0.000 {einheit}"
+    if abs_v < 0.001 or abs_v >= 1_000_000:
+        return f"{value:.{prec}e} {einheit}"
+    digits_before = max(1, int(np.floor(np.log10(abs_v))) + 1)
+    dec = max(0, min(prec, 6 - digits_before))
+    return f"{value:.{dec}f} {einheit}"
 
 
 def _fmt_integral(value_raw: float, aktiv_einheit: str, zeit_einheit: str) -> str:
@@ -377,7 +381,7 @@ def _fmt_integral(value_raw: float, aktiv_einheit: str, zeit_einheit: str) -> st
     for unit in ('s', 'ms', 'µs', 'ns'):
         scaled = abs_si / _ZEIT_TO_S[unit]
         if scaled >= 0.9:
-            prec = ".0f" if scaled >= 1000 else ".1f" if scaled >= 100 else ".2f" if scaled >= 10 else ".3f"
+            prec = ".0f" if scaled >= 100_000 else ".1f" if scaled >= 10_000 else ".2f" if scaled >= 1_000 else ".3f"
             return f"{val_si / _ZEIT_TO_S[unit]:{prec}} {aktiv_einheit}·{unit}"
     return f"{val_si / _ZEIT_TO_S['ns']:.3f} {aktiv_einheit}·ns"
 
@@ -1336,29 +1340,22 @@ z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub
 
 # Zeile 2 – 1. Ableitung
 g1, g2, g3, g4 = st.columns(4)
-g1.metric(f"d {active_sensor} /dt (A-B)",   _fmt_val(v_avg, v_einheit))
-g2.metric(f"Δd {active_sensor} /dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric(f"d {active_sensor} /dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
+g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
+g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
+g3.metric(f"d{active_sensor}/dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
 g4.metric("SOP",                          _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
 
-# Zeile 3 – 2. Ableitung + Integral
-a1, a2, a3 = st.columns(3)
-a1.metric(f"d² {active_sensor} /dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
-a2.metric(f"d² {active_sensor} /dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
-a3.metric(f"∫ {active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
-
-# Zeile 4 – Kanal-Multiplikation (nur wenn aktiviert)
-if show_multi_kanal:
-    _mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
-    if len(_mc_auswahl) == 2:
-        _mc_einh_a   = kanal_einheit_map.get(_mc_auswahl[0], '?')
-        _mc_einh_b   = kanal_einheit_map.get(_mc_auswahl[1], '?')
-        _mc_label    = f"∫ {_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)"
-        _mc_fmt      = _fmt_integral(multi_integral_val, f"{_mc_einh_a}·{_mc_einh_b}", _zeit_einheit)
-        m1, *_ = st.columns(4)
-        m1.metric(_mc_label, _mc_fmt)
-    else:
-        st.info(f"Multi. Kanal: {len(_mc_auswahl)} von 2 Kanälen ausgewählt – bitte genau 2 wählen.", icon="ℹ️")
+# Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral
+_mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
+a1, a2, a3, a4 = st.columns(4)
+a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
+a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
+a3.metric(f"∫{active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
+if show_multi_kanal and len(_mc_auswahl) == 2:
+    _mc_einh_a = kanal_einheit_map.get(_mc_auswahl[0], '?')
+    _mc_einh_b = kanal_einheit_map.get(_mc_auswahl[1], '?')
+    a4.metric(f"∫{_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)",
+              _fmt_integral(multi_integral_val, f"{_mc_einh_a}·{_mc_einh_b}", _zeit_einheit))
 
 # ---------------------------------------------------------------------------
 # EXPORT
