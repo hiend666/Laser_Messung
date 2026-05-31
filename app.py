@@ -117,13 +117,15 @@ defaults = {
     'show_v_avg': False,
     'show_rect_fit': False,
     'show_velocity': False,
-    'window_length': 30,
+    'window_length': 30,       # freier Key – nie Widget-Key
+    'window_length_sw': 30,    # Widget-Key: Slider Glättung D
     'show_acceleration': False,
-    'window_length_accel': 40,
+    'window_length_accel': 40,     # freier Key – nie Widget-Key
+    'window_length_accel_sw': 40,  # Widget-Key: Slider Glättung D2
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
-    'off_fein': False,
+    'off_fein_stufe': '×1',
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
     'show_widerstand_integral': False,
@@ -173,7 +175,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
     'show_integral',
-    'off_fein',
+    'off_fein_stufe',
     'show_multi_kanal', 'multi_kanal_auswahl',
     'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
@@ -320,6 +322,22 @@ def _make_off_cb(i: int):
 
 OFF_CALLBACKS = [_make_off_cb(i) for i in range(1, N_KANÄLE + 1)]
 
+def _on_window_length_cb():
+    st.session_state['window_length'] = st.session_state['window_length_sw']
+
+def _on_window_length_accel_cb():
+    st.session_state['window_length_accel'] = st.session_state['window_length_accel_sw']
+
+def _on_fein_toggle():
+    """Beim Stufenwechsel: freie Off-Keys in Widget-Keys übernehmen,
+    damit Streamlit den Slider-Wert nicht auf min_value snappt."""
+    for _i in range(1, N_KANÄLE + 1):
+        if f'off{_i}' in st.session_state:
+            st.session_state[f'off{_i}_slider'] = st.session_state[f'off{_i}']
+
+_FEIN_STUFEN = ['×1', '÷10', '÷100']
+_FEIN_FAKTOR = {'×1': 1, '÷10': 10, '÷100': 100}
+
 
 def _setze_cursor_position(total_time_ms: float) -> None:
     """Setzt XA und XB auf Standardposition (30 % und 60 % der Gesamtzeit)."""
@@ -448,6 +466,9 @@ def on_settings_upload():
         for _k, _v in _loaded.items():
             if _k in EINSTELLUNGEN_KEYS:
                 st.session_state[_k] = _v
+        # Widget-Mirror-Keys nach Laden synchronisieren
+        st.session_state['window_length_sw']       = st.session_state.get('window_length', 30)
+        st.session_state['window_length_accel_sw'] = st.session_state.get('window_length_accel', 40)
         st.session_state['_settings_load_status'] = 'ok'
     except Exception as _exc:
         st.session_state['_settings_load_status'] = str(_exc)
@@ -692,9 +713,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     st.session_state[f'off{_ri}_slider'] = 0.0
                 st.rerun()
 
-            st.toggle("Fein (÷10)", key="off_fein",
-                      help="Verfeinert die Slider-Schrittweite um Faktor 10 für präzise Einstellung.")
-            _fein = st.session_state.get('off_fein', False)
+            st.segmented_control(
+                "Schrittweite", _FEIN_STUFEN, key="off_fein_stufe",
+                on_change=_on_fein_toggle,
+                help="Schrittweite der Y-Offset-Slider: ×1 = Standard, ÷10 = fein, ÷100 = sehr fein.",
+            )
+            _fein_faktor = _FEIN_FAKTOR.get(st.session_state.get('off_fein_stufe', '×1'), 1)
             for i, name in enumerate(sensor_namen):
                 _raw_col  = df_raw[name]
                 _off_lim  = max(Y_OFFSET_LIMIT_MIN,
@@ -704,10 +728,13 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 _off_step = (0.1   if _off_lim <= SLIDER_STEP_SCHWELLEN[0] else
                              1.0   if _off_lim <= SLIDER_STEP_SCHWELLEN[1] else
                              10.0  if _off_lim <= SLIDER_STEP_SCHWELLEN[2] else 100.0)
-                if _fein:
-                    _off_step /= 10.0
+                _off_step /= _fein_faktor
+                _off_fmt  = ("%.3f" if _off_step < 0.01
+                             else "%.2f" if _off_step < 0.1
+                             else "%.1f" if _off_step < 1.0
+                             else "%.0f")
                 st.slider(
-                    name, -_off_lim, _off_lim, step=_off_step,
+                    name, -_off_lim, _off_lim, step=_off_step, format=_off_fmt,
                     key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
                     help=f"Y-Versatz für diesen Kanal (Bereich ±{_off_lim:.0f}, Schritt {_off_step:.4g}).",
                 )
@@ -1002,18 +1029,18 @@ show_velocity = st.sidebar.toggle(
 )
 if show_velocity:
     st.sidebar.slider(
-        "Glättung D", 5, 80, step=1,
-        key="window_length",
+        "Glättung D", 5, 400, step=1,
+        key="window_length_sw", on_change=_on_window_length_cb,
         help="Fenstergröße des Savitzky-Golay-Filters für die 1. Ableitung. Größer = glatter, aber geringere Detailauflösung.",
     )
 show_acceleration = st.sidebar.toggle(
-    f"d² {active_sensor} /dt² anzeigen", key="show_acceleration",
+    f"d²{active_sensor}/dt² anzeigen", key="show_acceleration",
     help="Zeigt die 2. Ableitung (Beschleunigung) des aktiven Kanals auf einer dritten Y-Achse.",
 )
 if show_acceleration:
     st.sidebar.slider(
-        "Glättung D2", 10, 75, step=1,
-        key="window_length_accel",
+        "Glättung D2", 10, 400, step=1,
+        key="window_length_accel_sw", on_change=_on_window_length_accel_cb,
         help="Fenstergröße des Savitzky-Golay-Filters für die 2. Ableitung. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
     )
 

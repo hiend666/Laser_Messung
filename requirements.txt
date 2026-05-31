@@ -4,3 +4,5 @@ plotly
 kaleido==0.2.1
 scipy
 reportlab
+#source /workspaces/Laser_Messung/.venv/bin/activate
+#streamlit run app.py
