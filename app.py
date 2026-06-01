@@ -115,6 +115,11 @@ defaults = {
     'crop_start': None,
     'crop_end': None,
     'show_v_avg': False,
+    'mark_vmax':  False,   # D-max Marker anzeigen
+    'mark_vmin':  False,   # D-min Marker anzeigen
+    'mark_afall': False,   # D2-max Marker anzeigen
+    'mark_arise': False,   # D2-min Marker anzeigen
+    'show_rect_fit_top': False,
     'show_rect_fit': False,
     'show_velocity': False,
     'window_length': 30,       # freier Key – nie Widget-Key
@@ -170,7 +175,8 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
     'skip_rows', 'max_samples',
     'xa', 'xb',
-    'show_v_avg', 'show_rect_fit',
+    'show_v_avg', 'mark_vmax', 'mark_vmin', 'mark_afall', 'mark_arise',
+    'show_rect_fit_top', 'show_rect_fit',
     'show_velocity', 'window_length',
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
@@ -378,6 +384,20 @@ def _fmt_freq(value_hz: float) -> str:
     if abs_hz >= 1e3:
         return f"{value_hz/1e3:.3f} kHz"
     return f"{value_hz:.3f} Hz"
+
+
+_EINH_STROM  = {'A', 'mA'}
+_EINH_SPANNG = {'V', 'mV'}
+
+def _produkt_einheit(einh_a: str, einh_b: str) -> str:
+    """Kombinierte Einheit für Multiplikations-Integral.
+    Strom × Spannung (beliebige Reihenfolge) → Spannung zuerst (VA-Konvention).
+    """
+    if einh_a in _EINH_STROM and einh_b in _EINH_SPANNG:
+        return f"{einh_b}{einh_a}"    # A×V → VA,  mA×V → VmA,  A×mV → mVA
+    if einh_a in _EINH_SPANNG and einh_b in _EINH_STROM:
+        return f"{einh_a}{einh_b}"    # V×A → VA,  V×mA → VmA,  mV×A → mVA
+    return f"{einh_a}·{einh_b}"
 
 
 def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
@@ -914,12 +934,15 @@ crop_active = (
     st.session_state.crop_start is not None
     and st.session_state.crop_end is not None
 )
+_CURSOR_STEP = 0.001   # Slider-Schrittweite für XA/XB
+
 if crop_active:
     ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _hz_faktor)
     ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _hz_faktor)
     df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
-    min_zeit = float(df['Zeit (ms)'].iloc[0])
-    max_zeit = float(df['Zeit (ms)'].iloc[-1])
+    # Auf Slider-Schrittgitter runden damit (xa - min_zeit) immer ein Vielfaches von step ist
+    min_zeit = float(np.floor(df['Zeit (ms)'].iloc[0]  / _CURSOR_STEP) * _CURSOR_STEP)
+    max_zeit = float(np.ceil( df['Zeit (ms)'].iloc[-1] / _CURSOR_STEP) * _CURSOR_STEP)
     max_idx  = len(df) - 1
 else:
     df       = df_use
@@ -971,21 +994,21 @@ if (xb != st.session_state.xb
     st.session_state.xb_sw = xb
     st.session_state.xb_nw = xb
 
-with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
-    st.number_input(
-        f"Zeit XA ({_zeit_einheit})", min_zeit, max_zeit,
-        step=0.001, format="%.3f",
-        key="xa_nw", on_change=update_xa_from_num,
-        help=f"Linker Zeitcursor ({_zeit_einheit}) – Startpunkt für Δt, Δs und d/dt (A-B).",
-    )
-    st.number_input(
-        f"Zeit XB ({_zeit_einheit})", min_zeit, max_zeit,
-        step=0.001, format="%.3f",
-        key="xb_nw", on_change=update_xb_from_num,
-        help=f"Rechter Zeitcursor ({_zeit_einheit}) – Endpunkt für Δt, Δs und d/dt (A-B).",
-    )
-    if xa > xb:
-        st.warning("⚠️ XA liegt nach XB – Marker vertauscht.")
+with st.sidebar.expander("Diagrammarker", expanded=False):
+    st.caption("Peak-Marker", help="Sichtbarkeit der Peak-Marker im Diagramm.")
+    mark_vmax  = st.toggle("D-max",  key="mark_vmax",  help="Linie des höchsten Geschwindigkeits-Peaks (betragsmäßig) einzeichnen.")
+    mark_vmin  = st.toggle("D-min",  key="mark_vmin",  help="Linie des stärksten Abfalls (negativster Geschwindigkeitspeak) einzeichnen.")
+    mark_afall = st.toggle("D2-max", key="mark_afall", help="Marker des größten Beschleunigungs-Peaks (fallende Flanke) einzeichnen.")
+    mark_arise = st.toggle("D2-min", key="mark_arise", help="Marker des negativsten Beschleunigungs-Peaks (steigende Flanke) einzeichnen.")
+    st.divider()
+    st.caption("Diagrammlinien")
+    show_v_avg       = st.toggle("Schnittlinie A–B", key="show_v_avg",
+                                 help="Verbindungslinie von XA nach XB – zeigt die mittlere Änderungsrate dIN1/dt (A-B).")
+    show_rect_fit_top = st.toggle("Rechteck-Fit Top/Bot.", key="show_rect_fit_top",
+                                  help="Obere und untere gestrichelte Linie des Rechteck-Fits einzeichnen.")
+    show_rect_fit    = st.toggle("Rechteck-Fit füllen", key="show_rect_fit",
+                                 help="Vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.")
+    st.divider()
     _tb_f = _hz_faktor / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
     _x_len = max(1e-9, max_zeit - min_zeit)
     _tb_min_curr = _x_len / 200
@@ -1013,12 +1036,6 @@ with st.sidebar.expander("Zeitmarker & Basis", expanded=False):
     )
     v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
 
-show_v_avg    = st.sidebar.toggle("Schnittlinie A–B anzeigen", key="show_v_avg",
-                                  help="Zeichnet eine Verbindungslinie von XA nach XB und visualisiert damit die mittlere Änderungsrate dIN1/dt (A-B).")
-show_rect_fit = st.sidebar.toggle(
-    "Rechteck-Fit füllen", key="show_rect_fit",
-    help="Zeigt zusätzlich vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.",
-)
 show_integral = st.sidebar.toggle(
     f"∫ d {active_sensor} dt (A-B) anzeigen", key="show_integral",
     help="Integriert den aktiven Kanal und Zeichnet die Fläche zwischen XA und XB transparent ein.",
@@ -1186,12 +1203,16 @@ sg_a_roh  = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.w
 # Peak-Marker-Initialisierung (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
 t_vmax_ende,  y_vmax_ende  = None, None
+t_vmin_start, y_vmin_start = None, None
+t_vmin_ende,  y_vmin_ende  = None, None
 t_amax_falling, y_amax_falling = None, None
 t_amax_rising,  y_amax_rising  = None, None
 has_vmax         = False
+has_vmin         = False
 has_amax_falling = False
 has_amax_rising  = False
 v_max            = float('nan')
+v_min            = float('nan')
 a_max_falling    = float('nan')
 a_min_rising     = float('nan')
 sop_linien: list = []
@@ -1199,20 +1220,36 @@ v_sop            = float('nan')
 
 if idx_end > idx_start:
     if sg_v_roh is not None:
-        sg_v_abs  = np.abs(sg_v_roh * v_faktor)
+        sg_v_signed = sg_v_roh * v_faktor
+        sg_v_abs    = np.abs(sg_v_signed)
+
+        # D-max: betragsmäßig höchste Geschwindigkeit
         sg_v_slice        = sg_v_abs[idx_start:idx_end + 1]
         idx_vmax_peak_loc = int(np.argmax(sg_v_slice))
         idx_vmax_peak     = idx_start + idx_vmax_peak_loc
         iv_start          = max(0, idx_vmax_peak - halbes_zeitfenster)
         iv_ende           = min(max_idx, idx_vmax_peak + halbes_zeitfenster)
         v_max             = float(np.mean(sg_v_abs[iv_start:iv_ende + 1]))
-
         if 0 <= iv_start <= max_idx and 0 <= iv_ende <= max_idx:
             t_vmax_start = df.loc[iv_start, 'Zeit (ms)']
             y_vmax_start = df.loc[iv_start, active_sensor]
             t_vmax_ende  = df.loc[iv_ende,  'Zeit (ms)']
             y_vmax_ende  = df.loc[iv_ende,  active_sensor]
             has_vmax     = True
+
+        # D-min: stärkste fallende Geschwindigkeit (negativster vorzeichenbehafteter Peak)
+        sg_v_signed_slice  = sg_v_signed[idx_start:idx_end + 1]
+        idx_vmin_peak_loc  = int(np.argmin(sg_v_signed_slice))
+        idx_vmin_peak      = idx_start + idx_vmin_peak_loc
+        iv_min_start       = max(0, idx_vmin_peak - halbes_zeitfenster)
+        iv_min_ende        = min(max_idx, idx_vmin_peak + halbes_zeitfenster)
+        v_min              = float(np.mean(sg_v_signed[iv_min_start:iv_min_ende + 1]))
+        if 0 <= iv_min_start <= max_idx and 0 <= iv_min_ende <= max_idx:
+            t_vmin_start = df.loc[iv_min_start, 'Zeit (ms)']
+            y_vmin_start = df.loc[iv_min_start, active_sensor]
+            t_vmin_ende  = df.loc[iv_min_ende,  'Zeit (ms)']
+            y_vmin_ende  = df.loc[iv_min_ende,  active_sensor]
+            has_vmin     = True
 
     if sg_a_roh is not None:
         sg_a = sg_a_roh * a_faktor
@@ -1314,10 +1351,11 @@ _baue_traces(
     kanal_zu_yaxis, active_sensor, active_yaxis,
     sensor_namen,
     xa, xb, ya, yb, min_zeit, max_zeit,
-    show_v_avg, rect_fit, show_rect_fit,
-    has_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
-    has_amax_falling, t_amax_falling, y_amax_falling,
-    has_amax_rising, t_amax_rising, y_amax_rising,
+    show_v_avg, rect_fit, show_rect_fit, show_rect_fit_top,
+    has_vmax and mark_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+    has_vmin and mark_vmin, t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende,
+    has_amax_falling and mark_afall, t_amax_falling, y_amax_falling,
+    has_amax_rising  and mark_arise,  t_amax_rising,  y_amax_rising,
     sop_linien,
     show_velocity, velocity, v_yaxis,
     show_acceleration, acceleration, a_yaxis,
@@ -1383,8 +1421,14 @@ with btn_col1:
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
         st.session_state.crop_start = crop_t0
         st.session_state.crop_end   = crop_t1
-        st.session_state.xa    = float(min(xa, xb))
-        st.session_state.xb    = float(max(xa, xb))
+        _xa_new = float(min(xa, xb))
+        _xb_new = float(max(xa, xb))
+        st.session_state.xa    = _xa_new
+        st.session_state.xa_sw = _xa_new
+        st.session_state.xa_nw = _xa_new
+        st.session_state.xb    = _xb_new
+        st.session_state.xb_sw = _xb_new
+        st.session_state.xb_nw = _xb_new
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
@@ -1420,7 +1464,7 @@ g1, g2, g3, g4 = st.columns(4)
 g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
 g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
 g3.metric(f"d{active_sensor}/dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
-g4.metric("SOP",                          _fmt_val(v_sop, v_einheit)          if not np.isnan(v_sop) else "N/A")
+g4.metric(f"d{active_sensor}/dt min",     _fmt_val(v_min, v_einheit)          if not np.isnan(v_min) else "N/A")
 
 # Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral
 _mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
@@ -1432,7 +1476,7 @@ if show_multi_kanal and len(_mc_auswahl) == 2:
     _mc_einh_a = kanal_einheit_map.get(_mc_auswahl[0], '?')
     _mc_einh_b = kanal_einheit_map.get(_mc_auswahl[1], '?')
     a4.metric(f"∫{_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)",
-              _fmt_integral(multi_integral_val, f"{_mc_einh_a}·{_mc_einh_b}", _zeit_einheit))
+              _fmt_integral(multi_integral_val, _produkt_einheit(_mc_einh_a, _mc_einh_b), _zeit_einheit))
 
 # Zeile 4 – Widerstands-Integral (nur wenn aktiviert)
 if show_widerstand_integral and _w_kanal:
@@ -1461,6 +1505,7 @@ metrics = {
     f"d {active_sensor} /dt (A-B)":   _fmt_val(v_avg, v_einheit),
     f"Δd {active_sensor} /dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
     f"d {active_sensor} /dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
+    f"d {active_sensor} /dt min":    _fmt_val(v_min, v_einheit)            if not np.isnan(v_min) else "N/A",
     "SOP":                          _fmt_val(v_sop, v_einheit)            if not np.isnan(v_sop) else "N/A",
     # 2. Ableitung
     f"d² {active_sensor} /dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
@@ -1475,7 +1520,7 @@ if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 
     _mc_ea_exp  = kanal_einheit_map.get(_mc_a_exp, '?')
     _mc_eb_exp  = kanal_einheit_map.get(_mc_b_exp, '?')
     metrics[f"∫ {_mc_a_exp}×{_mc_b_exp} dt (A-B)"] = _fmt_integral(
-        multi_integral_val, f"{_mc_ea_exp}·{_mc_eb_exp}", _zeit_einheit
+        multi_integral_val, _produkt_einheit(_mc_ea_exp, _mc_eb_exp), _zeit_einheit
     )
 if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_val):
     _w_kohm_exp = float(st.session_state.get('widerstand_kohm', 200.0))
@@ -1483,50 +1528,82 @@ if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_va
         widerstand_integral_val, 'A', _zeit_einheit
     )
 export_format = st.sidebar.radio(
-    "Format:", ["PDF", "PNG"], horizontal=True, label_visibility="collapsed",
-    help="PDF enthält Diagramm und Kenngrößen-Tabelle; PNG ist nur das Diagramm.",
+    "Format:", ["PDF", "PNG", "CSV (Oszilloskop)"], horizontal=True,
+    label_visibility="collapsed",
+    help="PDF/PNG: Diagramm-Export. CSV: Re-importierbar als 'Oszilloskop CSV' mit allen sichtbaren Kanälen.",
 )
 if st.sidebar.button("📥 Export erstellen", width="stretch",
                      help="Erstellt die Exportdatei im gewählten Format – Download-Button erscheint danach."):
     with st.spinner("Wird erstellt..."):
         try:
-            chart_png = build_chart_png(
-                df, sichtbare_sensor_namen, active_sensor,
-                xa, xb, ya, yb, show_v_avg,
-                t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
-                t_amax_falling, y_amax_falling, has_amax_falling,
-                t_amax_rising,  y_amax_rising,  has_amax_rising,
-                show_rect_fit=show_rect_fit,
-                rect_fit=rect_fit,
-                show_velocity=show_velocity,
-                window_length=st.session_state.window_length,
-                show_acceleration=show_acceleration,
-                window_length_accel=st.session_state.window_length_accel,
-                sop_linien=sop_linien,
-                kanal_einheit_map=kanal_einheit_map,
-                alle_sensor_namen=sensor_namen,
-                hz_faktor=_hz_faktor,
-                zeit_einheit=_zeit_einheit,
-                kanal_ch_num=_sensor_ch_num,
-                show_integral=show_integral,
-            )
             stem = uploaded_file.name.rsplit('.', 1)[0]
-            if export_format == "PDF":
-                file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
+
+            if export_format == "CSV (Oszilloskop)":
+                # Oszilloskop-CSV-Format: Zeit in Sekunden, Kanäle mit Einheit-Header
+                # X-Offsets sind bereits in df eingebacken (np.roll); NaN-Randzeilen
+                # (entstehen durch den Roll) werden gefiltert damit der Re-Import sauber bleibt.
+                _ex_kanäle = sichtbare_sensor_namen
+                _n_ex      = len(_ex_kanäle)
+                _valid_mask = df[_ex_kanäle].notna().all(axis=1)
+                _df_ex      = df[_valid_mask].reset_index(drop=True)
+                _zeit_s     = _df_ex['Zeit (ms)'].values / _hz_faktor   # Anzeigeeinheit → Sekunden
+                header1 = 'x-axis,' + ','.join(str(i + 1) for i in range(_n_ex))
+                header2 = 'second,' + ','.join(
+                    kanal_einheit_map.get(k, '') for k in _ex_kanäle
+                )
+                _rows = [header1, header2]
+                for _ri in range(len(_df_ex)):
+                    _row = f"{_zeit_s[_ri]:.10e}"
+                    for _k in _ex_kanäle:
+                        _row += f",{_df_ex[_k].iloc[_ri]:.8e}"
+                    _rows.append(_row)
+                _csv_bytes = '\n'.join(_rows).encode('utf-8')
                 st.sidebar.download_button(
-                    label="💾 PDF herunterladen",
-                    data=file_bytes_out,
-                    file_name=f"{stem}_auswertung.pdf",
-                    mime="application/pdf",
+                    label="💾 CSV herunterladen",
+                    data=_csv_bytes,
+                    file_name=f"{stem}_osc.csv",
+                    mime="text/csv",
                     width="stretch",
                 )
             else:
-                st.sidebar.download_button(
-                    label="💾 PNG herunterladen",
-                    data=chart_png,
-                    file_name=f"{stem}_diagramm.png",
-                    mime="image/png",
-                    width="stretch",
+                chart_png = build_chart_png(
+                    df, sichtbare_sensor_namen, active_sensor,
+                    xa, xb, ya, yb, show_v_avg,
+                    t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax and mark_vmax,
+                    t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende, has_vmin and mark_vmin,
+                    t_amax_falling, y_amax_falling, has_amax_falling and mark_afall,
+                    t_amax_rising,  y_amax_rising,  has_amax_rising  and mark_arise,
+                    show_rect_fit=show_rect_fit,
+                    show_rect_fit_top=show_rect_fit_top,
+                    rect_fit=rect_fit,
+                    show_velocity=show_velocity,
+                    window_length=st.session_state.window_length,
+                    show_acceleration=show_acceleration,
+                    window_length_accel=st.session_state.window_length_accel,
+                    sop_linien=sop_linien,
+                    kanal_einheit_map=kanal_einheit_map,
+                    alle_sensor_namen=sensor_namen,
+                    hz_faktor=_hz_faktor,
+                    zeit_einheit=_zeit_einheit,
+                    kanal_ch_num=_sensor_ch_num,
+                    show_integral=show_integral,
                 )
+                if export_format == "PDF":
+                    file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
+                    st.sidebar.download_button(
+                        label="💾 PDF herunterladen",
+                        data=file_bytes_out,
+                        file_name=f"{stem}_auswertung.pdf",
+                        mime="application/pdf",
+                        width="stretch",
+                    )
+                else:
+                    st.sidebar.download_button(
+                        label="💾 PNG herunterladen",
+                        data=chart_png,
+                        file_name=f"{stem}_diagramm.png",
+                        mime="image/png",
+                        width="stretch",
+                    )
         except Exception as exc:
             st.sidebar.error(f"Export fehlgeschlagen: {exc}")

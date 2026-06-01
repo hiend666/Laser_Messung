@@ -38,6 +38,7 @@ FARBE_D             = 'purple'
 FARBE_D2            = 'orange'
 FARBE_V_SCHNITT     = 'green'
 FARBE_VMAX          = 'red'
+FARBE_VMIN          = 'royalblue'
 FARBE_AMAX          = 'orange'
 FARBE_CURSOR        = 'red'
 FARBE_RECHTECK      = 'lime'
@@ -248,6 +249,7 @@ def _zeichne_rechteck_fit(
     bereich_min: float,
     bereich_max: float,
     mit_fuellung: bool,
+    mit_top_linie: bool = True,
     yaxis: str = 'y',
 ):
     """Fügt Rechteck-Fit-Traces und optionale Füllformen zum Diagramm hinzu."""
@@ -256,15 +258,24 @@ def _zeichne_rechteck_fit(
         clipped_end   = min(run['t_end'],   bereich_max)
         if clipped_start >= clipped_end:
             continue
-        fig.add_trace(go.Scatter(
-            x=[clipped_start, clipped_end],
-            y=[rect_fit['y_high'], rect_fit['y_high']],
-            mode='lines',
-            name='Rechteck-Fit' if idx == 0 else None,
-            showlegend=(idx == 0),
-            line=dict(color=FARBE_RECHTECK, dash='dash', width=2),
-            yaxis=yaxis,
-        ))
+        if mit_top_linie:
+            fig.add_trace(go.Scatter(
+                x=[clipped_start, clipped_end],
+                y=[rect_fit['y_high'], rect_fit['y_high']],
+                mode='lines',
+                name='Rechteck-Fit' if idx == 0 else None,
+                showlegend=(idx == 0),
+                line=dict(color=FARBE_RECHTECK, dash='dash', width=2),
+                yaxis=yaxis,
+            ))
+            fig.add_trace(go.Scatter(
+                x=[clipped_start, clipped_end],
+                y=[rect_fit['y_low'], rect_fit['y_low']],
+                mode='lines',
+                name=None, showlegend=False,
+                line=dict(color=FARBE_RECHTECK, dash='dash', width=2),
+                yaxis=yaxis,
+            ))
         if mit_fuellung:
             for x_kante in (clipped_start, clipped_end):
                 fig.add_shape(
@@ -297,55 +308,62 @@ def _finde_sop_kreuzungen(
     halbes_zeitfenster: int,
     v_faktor: float = 1e-3,
 ) -> tuple[list, float]:
-    """Findet SOP-Punkte an steigenden Flanken des Rechteck-Fits.
+    """Findet SOP-Punkte an steigenden UND fallenden Flanken des Rechteck-Fits.
 
-    Sucht für jeden erkannten Rechteck-Puls die erste steigende Nulldurchgangslinie
-    auf dem SOP-Pegel. Berechnet die Geschwindigkeit an diesem Punkt über ein
-    Mittelungsfenster (halbes_zeitfenster Samples links und rechts).
+    Für jeden Puls werden steigende (Pulsanfang) und fallende (Pulsende) Flanken
+    gesucht. Steigende Flanken werden bevorzugt: der v_sop-Messwert kommt vom
+    ersten steigenden Kreuzungspunkt; ist keiner vorhanden, vom ersten fallenden.
 
     Gibt (sop_linien, v_sop) zurück:
-    - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level) für Diagramm-Linien
-    - v_sop:      D am ersten Kreuzungspunkt (in Anzeigeeinheit), oder nan
+    - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level)
+    - v_sop:      D am bevorzugten Kreuzungspunkt (in Anzeigeeinheit), oder nan
     """
     hub = rect_fit['y_high'] - rect_fit['y_low']
     if hub <= 0:
         return [], float('nan')
 
-    sop_level = rect_fit['y_low'] + (sop_percent / 100.0) * hub
-    n         = len(signal)
-    ergebnisse = []
+    sop_level  = rect_fit['y_low'] + (sop_percent / 100.0) * hub
+    n          = len(signal)
+    ergebnisse = []   # (t_sop, t0, t1, y, v, flanke)  flanke: 'rise'|'fall'
+
+    def _kreuzung(idx_abs: int, flanke: str):
+        i0   = max(0, idx_abs - halbes_zeitfenster)
+        i1   = min(n - 1, idx_abs + halbes_zeitfenster)
+        dt_s = (i1 - i0) / sample_rate
+        v    = ((signal[i1] - signal[i0]) * v_faktor) / dt_s if dt_s > 0 else float('nan')
+        t    = float(zeit[idx_abs])
+        t0   = float(zeit[max(0, idx_abs - 10)])
+        t1   = float(zeit[min(n - 1, idx_abs + 10)])
+        return (t, t0, t1, sop_level, v, flanke)
 
     for run in rect_fit['runs']:
-        # Suchfenster: kurz vor Pulsstart bis ins erste Drittel des Pulses
-        t_suche_start = run['t_start'] - 0.5
-        t_suche_ende  = run['t_start'] + max(0.1, (run['t_end'] - run['t_start']) * 0.3)
-        idx_fenster   = np.where((zeit >= t_suche_start) & (zeit <= t_suche_ende))[0]
-        if len(idx_fenster) < 2:
-            continue
+        puls_dauer = max(0.1, run['t_end'] - run['t_start'])
 
-        s             = signal[idx_fenster]
-        kreuzungs_pos = np.where((s[:-1] < sop_level) & (s[1:] >= sop_level))[0]
-        if len(kreuzungs_pos) == 0:
-            continue
+        # Steigende Flanke: kurz vor Pulsstart bis erstes Drittel des Pulses
+        idx_r = np.where((zeit >= run['t_start'] - 0.5) &
+                         (zeit <= run['t_start'] + puls_dauer * 0.3))[0]
+        if len(idx_r) >= 2:
+            s = signal[idx_r]
+            kpos = np.where((s[:-1] < sop_level) & (s[1:] >= sop_level))[0]
+            if len(kpos):
+                ergebnisse.append(_kreuzung(int(idx_r[kpos[0] + 1]), 'rise'))
 
-        abs_idx = int(idx_fenster[kreuzungs_pos[0] + 1])
-
-        i0    = max(0, abs_idx - halbes_zeitfenster)
-        i1    = min(n - 1, abs_idx + halbes_zeitfenster)
-        dt_s  = (i1 - i0) / sample_rate
-        v_sop = ((signal[i1] - signal[i0]) * v_faktor) / dt_s if dt_s > 0 else float('nan')
-
-        # Linie: je 10 Samples links und rechts des Kreuzungspunkts
-        t_sop    = float(zeit[abs_idx])
-        t_links  = float(zeit[max(0, abs_idx - 10)])
-        t_rechts = float(zeit[min(n - 1, abs_idx + 10)])
-        ergebnisse.append((t_sop, t_links, t_rechts, sop_level, v_sop))
+        # Fallende Flanke: letztes Drittel des Pulses bis kurz nach Pulsende
+        idx_f = np.where((zeit >= run['t_end'] - puls_dauer * 0.3) &
+                         (zeit <= run['t_end'] + 0.5))[0]
+        if len(idx_f) >= 2:
+            s = signal[idx_f]
+            kpos = np.where((s[:-1] >= sop_level) & (s[1:] < sop_level))[0]
+            if len(kpos):
+                ergebnisse.append(_kreuzung(int(idx_f[kpos[0] + 1]), 'fall'))
 
     if not ergebnisse:
         return [], float('nan')
 
-    sop_linien = [(t_sop, t0, t1, y) for t_sop, t0, t1, y, _ in ergebnisse]
-    v_sop_wert = ergebnisse[0][4]   # Geschwindigkeit am ersten Kreuzungspunkt
+    sop_linien = [(e[0], e[1], e[2], e[3]) for e in ergebnisse]
+    # Messwert: erster steigender Punkt bevorzugt, sonst erster gefundener
+    rise = [e for e in ergebnisse if e[5] == 'rise']
+    v_sop_wert = rise[0][4] if rise else ergebnisse[0][4]
     return sop_linien, v_sop_wert
 
 
@@ -408,8 +426,11 @@ def _baue_traces(
     show_v_avg: bool,
     rect_fit,
     show_rect_fit: bool,
+    show_rect_fit_top: bool,
     has_vmax: bool,
     t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+    has_vmin: bool,
+    t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende,
     has_amax_falling: bool,
     t_amax_falling, y_amax_falling,
     has_amax_rising: bool,
@@ -447,13 +468,26 @@ def _baue_traces(
 
     if rect_fit is not None:
         _zeichne_rechteck_fit(fig, rect_fit, min_zeit, max_zeit,
-                              mit_fuellung=show_rect_fit, yaxis=active_yaxis)
+                              mit_fuellung=show_rect_fit,
+                              mit_top_linie=show_rect_fit_top,
+                              yaxis=active_yaxis)
 
     if has_vmax:
         fig.add_trace(go.Scatter(
             x=[t_vmax_start, t_vmax_ende], y=[y_vmax_start, y_vmax_ende],
             mode='lines+markers', name='D-max',
-            line=dict(color=FARBE_VMAX, width=2),
+            line=dict(color=FARBE_VMAX, width=4),
+            marker=dict(color=FARBE_VMAX, size=14, symbol='circle',
+                        line=dict(color=FARBE_VMAX, width=2)),
+            yaxis=active_yaxis,
+        ))
+    if has_vmin:
+        fig.add_trace(go.Scatter(
+            x=[t_vmin_start, t_vmin_ende], y=[y_vmin_start, y_vmin_ende],
+            mode='lines+markers', name='D-min',
+            line=dict(color=FARBE_VMIN, width=4),
+            marker=dict(color=FARBE_VMIN, size=14, symbol='circle',
+                        line=dict(color=FARBE_VMIN, width=2)),
             yaxis=active_yaxis,
         ))
     if has_amax_falling:
@@ -526,9 +560,10 @@ def build_chart_png(
     active_sensor: str,
     xa, xb, ya, yb, show_v_avg,
     t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax,
+    t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende, has_vmin,
     t_amax_falling, y_amax_falling, has_amax_falling,
     t_amax_rising,  y_amax_rising,  has_amax_rising,
-    show_rect_fit=False, rect_fit=None,
+    show_rect_fit=False, show_rect_fit_top=True, rect_fit=None,
     show_velocity=False, window_length=21,
     show_acceleration=False, window_length_accel=21,
     sop_linien=None,
@@ -589,8 +624,9 @@ def build_chart_png(
         kanal_zu_yaxis, active_sensor, active_yaxis,
         _alle,
         xa, xb, ya, yb, t_min, t_max,
-        show_v_avg, rect_fit, show_rect_fit,
+        show_v_avg, rect_fit, show_rect_fit, show_rect_fit_top,
         has_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
+        has_vmin, t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende,
         has_amax_falling, t_amax_falling, y_amax_falling,
         has_amax_rising, t_amax_rising, y_amax_rising,
         sop_linien or [],
