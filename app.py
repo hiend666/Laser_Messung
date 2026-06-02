@@ -818,9 +818,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte", on_change=_SUB_EXPANDER_CBS['sub_grenzwerte']):
         st.caption("min / max  (0 = automatisch)")
+        _grenz_hat_inhalt = False
         for _i in range(1, N_KANÄLE + 1):
             _ch_name = st.session_state.get(f'ch{_i}_name', '').strip()
             if not _ch_name:
+                continue
+            if not st.session_state.get(f'show_ch{_i}', True):
                 continue
             _ch_einh = st.session_state.get(f'ch{_i}_einheit', 'µm')
             st.caption(f"{_ch_name}  ({_ch_einh})")
@@ -829,30 +832,42 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                               key=f'ch{_i}_ymin', label_visibility="collapsed")
             _gc2.number_input(f"max {_ch_name}", step=1.0, format="%.2f",
                               key=f'ch{_i}_ymax', label_visibility="collapsed")
-        st.caption("dIN1/dt")
-        _vc1, _vc2 = st.columns(2)
-        _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
-                          key="v_axis_min", label_visibility="collapsed")
-        _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
-                          key="v_axis_max", label_visibility="collapsed")
-        st.caption("d²IN1/dt²")
-        _ac1, _ac2 = st.columns(2)
-        _ac1.number_input("min d²IN1/dt²", step=500.0, format="%.0f",
-                          key="a_axis_min", label_visibility="collapsed")
-        _ac2.number_input("max d²IN1/dt²", step=500.0, format="%.0f",
-                          key="a_axis_max", label_visibility="collapsed")
-        st.caption("∫IN1 dt")
-        _ic1, _ic2 = st.columns(2)
-        _ic1.number_input("min ∫IN1 dt", step=0.001, format="%.4f",
-                          key="int_axis_min", label_visibility="collapsed")
-        _ic2.number_input("max ∫IN1 dt", step=0.001, format="%.4f",
-                          key="int_axis_max", label_visibility="collapsed")
-        st.caption("∫IN1×IN2 dt")
-        _mc1, _mc2 = st.columns(2)
-        _mc1.number_input("min ∫IN1×IN2 dt", step=0.001, format="%.4f",
-                          key="multi_diag_ymin", label_visibility="collapsed")
-        _mc2.number_input("max ∫IN1×IN2 dt", step=0.001, format="%.4f",
-                          key="multi_diag_ymax", label_visibility="collapsed")
+            _grenz_hat_inhalt = True
+        if st.session_state.get('show_velocity', False):
+            st.caption("dIN1/dt")
+            _vc1, _vc2 = st.columns(2)
+            _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
+                              key="v_axis_min", label_visibility="collapsed")
+            _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
+                              key="v_axis_max", label_visibility="collapsed")
+            _grenz_hat_inhalt = True
+        if st.session_state.get('show_acceleration', False):
+            st.caption("d²IN1/dt²")
+            _ac1, _ac2 = st.columns(2)
+            _ac1.number_input("min d²IN1/dt²", step=500.0, format="%.0f",
+                              key="a_axis_min", label_visibility="collapsed")
+            _ac2.number_input("max d²IN1/dt²", step=500.0, format="%.0f",
+                              key="a_axis_max", label_visibility="collapsed")
+            _grenz_hat_inhalt = True
+        if st.session_state.get('show_integral_curve', False):
+            st.caption("∫IN1 dt")
+            _ic1, _ic2 = st.columns(2)
+            _ic1.number_input("min ∫IN1 dt", step=0.001, format="%.4f",
+                              key="int_axis_min", label_visibility="collapsed")
+            _ic2.number_input("max ∫IN1 dt", step=0.001, format="%.4f",
+                              key="int_axis_max", label_visibility="collapsed")
+            _grenz_hat_inhalt = True
+        _mc_sel = st.session_state.get('multi_kanal_auswahl', [])
+        if st.session_state.get('show_multi_diag', False) and len(_mc_sel) == 2:
+            st.caption(f"∫{_mc_sel[0]}×{_mc_sel[1]} dt")
+            _mc1, _mc2 = st.columns(2)
+            _mc1.number_input(f"min ∫{_mc_sel[0]}×{_mc_sel[1]} dt", step=0.001, format="%.4f",
+                              key="multi_diag_ymin", label_visibility="collapsed")
+            _mc2.number_input(f"max ∫{_mc_sel[0]}×{_mc_sel[1]} dt", step=0.001, format="%.4f",
+                              key="multi_diag_ymax", label_visibility="collapsed")
+            _grenz_hat_inhalt = True
+        if not _grenz_hat_inhalt:
+            st.caption("Keine aktiven Kanäle oder Ableitungen.")
 
     with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern", on_change=_SUB_EXPANDER_CBS['sub_speichern']):
         _json_str = json.dumps(
