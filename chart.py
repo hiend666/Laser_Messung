@@ -81,7 +81,11 @@ def _yachsen_layout(
     y_ranges_fallback: dict[str, list] | None = None,
     kanal_bereiche: dict[str, tuple[float, float]] | None = None,
     kanal_ch_num: dict[str, int] | None = None,
-) -> tuple[dict, dict, str, str, float]:
+    show_integral_curve: bool = False,
+    int_einheit: str = '',
+    show_multi_diag: bool = False,
+    multi_diag_einheit: str = '',
+) -> tuple[dict, dict, str, str, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
     Kanäle gleicher Einheit teilen eine Achse – außer wenn ihre Wertebereiche
@@ -201,8 +205,10 @@ def _yachsen_layout(
             kanal_zu_yaxis[n] = 'y'
 
     n_sig = len(final_achsen)
-    v_yaxis = f'y{n_sig + 1}'
-    a_yaxis = f'y{n_sig + 2}'
+    v_yaxis        = f'y{n_sig + 1}'
+    a_yaxis        = f'y{n_sig + 2}'
+    int_yaxis      = f'y{n_sig + 3}'
+    multi_diag_yaxis = f'y{n_sig + 4}'
 
     rechte_achsen: list[tuple[str, str, list | None, dict]] = []
     for i, (titel, kanäle) in enumerate(final_achsen[1:], 1):
@@ -217,6 +223,18 @@ def _yachsen_layout(
         a_hi = float(st.session_state.get('a_axis_max', 0))
         a_rng = [a_lo, a_hi] if not (a_lo == 0 and a_hi == 0) else None
         rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng, dict(color=FARBE_D2)))
+    if show_integral_curve:
+        i_lo = float(st.session_state.get('int_axis_min', 0))
+        i_hi = float(st.session_state.get('int_axis_max', 0))
+        i_rng = [i_lo, i_hi] if not (i_lo == 0 and i_hi == 0) else None
+        rechte_achsen.append((f'yaxis{n_sig + 3}', int_einheit or '∫', i_rng,
+                               dict(color='rgba(0,150,255,0.85)')))
+    if show_multi_diag:
+        md_lo = float(st.session_state.get('multi_diag_ymin', 0))
+        md_hi = float(st.session_state.get('multi_diag_ymax', 0))
+        md_rng = [md_lo, md_hi] if not (md_lo == 0 and md_hi == 0) else None
+        rechte_achsen.append((f'yaxis{n_sig + 4}', multi_diag_einheit or '∫IN1×IN2', md_rng,
+                               dict(color='rgba(130,0,200,0.85)')))
 
     n_right = len(rechte_achsen)
     x_domain_end = max(X_DOMAIN_MIN, 1.0 - STEP * n_right) if n_right >= 1 else 1.0
@@ -236,7 +254,7 @@ def _yachsen_layout(
             ax['range'] = rng
         layout_yachsen[yk] = ax
 
-    return kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end
+    return kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x_domain_end
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +459,8 @@ def _baue_traces(
     show_acceleration: bool, acceleration,
     a_yaxis: str,
     show_integral: bool,
+    int_yaxis: str = 'y',
+    show_integral_curve: bool = False,
 ) -> None:
     """Fügt alle Mess- und Auswertungs-Traces zu fig hinzu.
 
@@ -541,13 +561,31 @@ def _baue_traces(
         ))
 
     if show_integral:
-        _mask = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
-        _df_int = df_plot[_mask]
-        if len(_df_int) > 0:
+        # Fläche unter der Kanalkurve zwischen XA und XB (wie ursprünglich)
+        _mask_fill = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
+        _df_fill   = df_plot[_mask_fill]
+        if len(_df_fill) > 0:
             _zeichne_integral_flaeche(
-                fig, _df_int['Zeit (ms)'].values, _df_int[active_sensor].values,
+                fig, _df_fill['Zeit (ms)'].values, _df_fill[active_sensor].values,
                 yaxis=active_yaxis,
             )
+
+    if show_integral_curve and len(df_plot) > 1:
+        # Kumulativer Integralverlauf zwischen XA und XB, ab XA normiert auf 0
+        _t_all  = df_plot['Zeit (ms)'].values
+        _sig    = df_plot[active_sensor].fillna(0).values
+        _mask_c = (_t_all >= xa) & (_t_all <= xb)
+        if np.any(_mask_c):
+            _dt_plt = float(_t_all[1] - _t_all[0])
+            _x_c    = _t_all[_mask_c]
+            _y_c    = np.cumsum(_sig[_mask_c]) * _dt_plt
+            _y_c   -= _y_c[0]               # Startwert 0 bei XA
+            fig.add_trace(go.Scatter(
+                x=_x_c, y=_y_c,
+                mode='lines', name=f'∫{active_sensor} (Verlauf)',
+                line=dict(color='rgba(0,150,255,0.85)', width=2),
+                yaxis=int_yaxis,
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +611,8 @@ def build_chart_png(
     zeit_einheit: str = 'ms',
     kanal_ch_num: dict | None = None,
     show_integral: bool = False,
+    show_integral_curve: bool = False,
+    multi_diag_data: dict | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -604,7 +644,10 @@ def build_chart_png(
     _kanal_bereiche: dict[str, tuple[float, float]] = {
         n: (float(df[n].min()), float(df[n].max())) for n in sensor_namen if n in df.columns
     }
-    kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
+    _int_einheit_png = f'{_aktiv_einheit}·{zeit_einheit}'
+    _md = multi_diag_data or {}
+    _md_eu = _md.get('einheit', '') + (f'·{zeit_einheit}' if _md.get('einheit') else '')
+    kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x_domain_end = _yachsen_layout(
         sensor_namen, kanal_einheit_map, y_range,
         show_velocity, velocity is not None,
         show_acceleration, acceleration is not None,
@@ -612,6 +655,10 @@ def build_chart_png(
         kanal_farbe_map=_kanal_farbe_map,
         kanal_bereiche=_kanal_bereiche,
         kanal_ch_num=kanal_ch_num,
+        show_integral_curve=show_integral_curve,
+        int_einheit=_int_einheit_png,
+        show_multi_diag=bool(_md),
+        multi_diag_einheit=_md_eu,
     )
     active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -632,7 +679,7 @@ def build_chart_png(
         sop_linien or [],
         show_velocity, velocity, v_yaxis,
         show_acceleration, acceleration, a_yaxis,
-        show_integral,
+        show_integral, int_yaxis, show_integral_curve,
     )
 
     export_fig.update_layout(
@@ -646,6 +693,22 @@ def build_chart_png(
         paper_bgcolor='white',
         **layout_yachsen,
     )
+
+    # ∫IN1×IN2 dt kumulativer Verlauf im Export-Diagramm
+    if multi_diag_data:
+        _px_all  = multi_diag_data['x']
+        _py_inst = multi_diag_data['y']   # instantaneous product
+        _dt_exp  = float(_px_all[1] - _px_all[0]) if len(_px_all) > 1 else 1.0
+        _y_cum   = np.cumsum(_py_inst) * _dt_exp
+        _y_cum  -= _y_cum[0]
+        export_fig.add_trace(go.Scatter(
+            x=_px_all, y=_y_cum,
+            mode='lines', name=f"∫{multi_diag_data.get('label','IN1×IN2')} dt",
+            line=dict(color='rgba(130,0,200,0.85)', width=2),
+            yaxis=multi_diag_yaxis,
+        ))
+        _zeichne_integral_flaeche(export_fig, _px_all, _y_cum, yaxis=multi_diag_yaxis)
+
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
 
 

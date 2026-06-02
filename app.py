@@ -34,7 +34,7 @@ Y_PUFFER        = 0.15      # Y-Bereich-Puffer oben (15 %) – muss mit chart.Y_
 
 # Einheiten-Auswahl für Kanäle
 EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
-EINHEIT_ALLE     = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+EINHEIT_ALLE     = EINHEIT_OPTIONEN   # Alias – für Session-State-Key-Generierung
 
 # Cursor-Startposition beim Laden einer neuen Datei (Anteil der Gesamtzeit)
 CURSOR_XA_INIT_FRAC = 0.30
@@ -102,8 +102,6 @@ defaults = {
     'xb': 0.001,      # freie Wahrheitsquelle – nie Widget-Key
     'xa_sw': 0.0,     # Widget-Key: Slider XA
     'xb_sw': 0.001,   # Widget-Key: Slider XB
-    'xa_nw': 0.0,     # Widget-Key: number_input XA
-    'xb_nw': 0.001,   # Widget-Key: number_input XB
     'zoom_token': 0,
     'last_file_name': None,
     'sample_rate': 2.55,
@@ -130,16 +128,22 @@ defaults = {
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
+    'show_integral_curve': False,
+    'int_axis_min': 0,      # 0 = Autoscale
+    'int_axis_max': 0,      # 0 = Autoscale
+    'show_multi_diag': False,
+    'multi_diag_ymin': 0,   # 0 = Autoscale
+    'multi_diag_ymax': 0,   # 0 = Autoscale
     'off_fein_stufe': '×1',
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
     'show_widerstand_integral': False,
     'widerstand_kohm': 200.0,
     'widerstand_kanal': '',
-    'v_axis_min': -3_200,
-    'v_axis_max':  3_200,
-    'a_axis_min': -20_000,
-    'a_axis_max':  20_000,
+    'v_axis_min': 0,   # 0 = Autoscale
+    'v_axis_max': 0,   # 0 = Autoscale
+    'a_axis_min': 0,   # 0 = Autoscale
+    'a_axis_max': 0,   # 0 = Autoscale
     'zeit_hz_faktor': 1000.0,  # Umrechnungsfaktor s → Anzeigeeinheit (1e3=ms, 1e6=µs, 1e9=ns)
     'n_kanäle_datei': N_KANÄLE,
     'sub_dateityp':   True,
@@ -159,6 +163,8 @@ for _i in range(1, N_KANÄLE + 1):
     defaults[f'off{_i}_slider'] = 0.0
     defaults[f'x_off{_i}']     = 0.0
     defaults[f'show_ch{_i}']   = True
+    defaults[f'ch{_i}_sg_en']  = False
+    defaults[f'ch{_i}_sg_win'] = 5
 for _e in EINHEIT_ALLE:
     defaults[einheit_ss_key_min(_e)] = 0.0
     defaults[einheit_ss_key_max(_e)] = 0.0
@@ -180,7 +186,8 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_velocity', 'window_length',
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
-    'show_integral',
+    'show_integral', 'show_integral_curve', 'int_axis_min', 'int_axis_max',
+    'show_multi_diag', 'multi_diag_ymin', 'multi_diag_ymax',
     'off_fein_stufe',
     'show_multi_kanal', 'multi_kanal_auswahl',
     'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
@@ -191,6 +198,7 @@ for _i in range(1, N_KANÄLE + 1):
         f'ch{_i}_name', f'ch{_i}_einheit', f'osc_skale_{_i}',
         f'off{_i}', f'off{_i}_slider', f'x_off{_i}', f'show_ch{_i}',
         f'ch{_i}_ymin', f'ch{_i}_ymax',
+        f'ch{_i}_sg_en', f'ch{_i}_sg_win',
     ]
 for _e in EINHEIT_ALLE:
     EINSTELLUNGEN_KEYS.append(einheit_ss_key_min(_e))
@@ -298,6 +306,33 @@ def _build_display_df_cached(
     return reader.build_display_df(df_raw, file_type, sample_rate_hz, kanal_namen, offsets, zeit_hz_faktor)
 
 
+@st.cache_data
+def _sg_ableitung_cached(
+    arr: np.ndarray,
+    dt_step_s: float,
+    window_length: int,
+    ordnung: int,
+) -> np.ndarray | None:
+    """Gecachter Wrapper um reader.berechne_sg_ableitung – kein Recompute bei Cursor-Bewegung."""
+    return reader.berechne_sg_ableitung(arr, dt_step_s, window_length, ordnung)
+
+
+@st.cache_data
+def _apply_sg_vorfilter_cached(
+    df_raw: pd.DataFrame,
+    kanal_namen: tuple[str, ...],
+    sg_params: tuple[tuple[bool, int], ...],
+) -> pd.DataFrame:
+    """Filtert Rohkanäle vor Y-Offset-Anwendung. Cache-Miss nur bei Daten- oder Parameteränderung."""
+    if not any(en for en, _ in sg_params):
+        return df_raw
+    df = df_raw.copy()
+    for name, (en, win) in zip(kanal_namen, sg_params):
+        if en and name in df.columns:
+            df[name] = reader.glaette_signal(df[name].values, win)
+    return df
+
+
 # ---------------------------------------------------------------------------
 # CALLBACKS – Zwei-Key-Muster
 # Widgets schreiben immer in den freien Key (xa/xb/off1…4), nie umgekehrt.
@@ -345,16 +380,17 @@ _FEIN_STUFEN = ['×1', '÷10', '÷100']
 _FEIN_FAKTOR = {'×1': 1, '÷10': 10, '÷100': 100}
 
 
+_CURSOR_STEP = 0.001   # Slider-Schrittweite für XA/XB – alle Cursor-Werte müssen Vielfache davon sein
+
 def _setze_cursor_position(total_time_ms: float) -> None:
-    """Setzt XA und XB auf Standardposition (30 % und 60 % der Gesamtzeit)."""
-    xa_init = total_time_ms * CURSOR_XA_INIT_FRAC
-    xb_init = total_time_ms * CURSOR_XB_INIT_FRAC
+    """Setzt XA und XB auf Standardposition (30 % und 60 % der Gesamtzeit).
+    Werte werden auf Slider-Schrittweite gerundet um Streamlit-Alignment-Fehler zu vermeiden."""
+    xa_init = round(total_time_ms * CURSOR_XA_INIT_FRAC, 3)
+    xb_init = round(total_time_ms * CURSOR_XB_INIT_FRAC, 3)
     st.session_state.xa    = xa_init
     st.session_state.xa_sw = xa_init
-    st.session_state.xa_nw = xa_init
     st.session_state.xb    = xb_init
     st.session_state.xb_sw = xb_init
-    st.session_state.xb_nw = xb_init
 
 
 def _fmt_zeit(value: float, einheit: str) -> str:
@@ -652,6 +688,17 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 "Einheit", _einh_opts, key=_einh_key,
                 help="Physikalische Einheit – bestimmt die Y-Achse.",
             )
+            _sg_en_key  = f'ch{_i}_sg_en'
+            _sg_win_key = f'ch{_i}_sg_win'
+            _sg_en = st.toggle(
+                "SG-Vorfilter", key=_sg_en_key,
+                help="Savitzky-Golay-Glättung vor allen Berechnungen (Polygrad 3). Reduziert Digitalisierungsrauschen.",
+            )
+            if _sg_en:
+                st.slider(
+                    "Fenster", 3, 99, step=2, key=_sg_win_key,
+                    help="Fenstergröße des SG-Vorfilters (ungerade, 3–99). Größer = stärker geglättet.",
+                )
 
     if uploaded_file:
         _kanal_cfg = [st.session_state.get(f'ch{i}_name', '').strip() for i in range(1, N_KANÄLE + 1)]
@@ -784,9 +831,9 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                               key=f'ch{_i}_ymax', label_visibility="collapsed")
         st.caption("dIN1/dt")
         _vc1, _vc2 = st.columns(2)
-        _vc1.number_input("min d²IN1/dt", step=100.0, format="%.0f",
+        _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
                           key="v_axis_min", label_visibility="collapsed")
-        _vc2.number_input("max d²IN1/dt", step=100.0, format="%.0f",
+        _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
                           key="v_axis_max", label_visibility="collapsed")
         st.caption("d²IN1/dt²")
         _ac1, _ac2 = st.columns(2)
@@ -794,6 +841,18 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                           key="a_axis_min", label_visibility="collapsed")
         _ac2.number_input("max d²IN1/dt²", step=500.0, format="%.0f",
                           key="a_axis_max", label_visibility="collapsed")
+        st.caption("∫IN1 dt")
+        _ic1, _ic2 = st.columns(2)
+        _ic1.number_input("min ∫IN1 dt", step=0.001, format="%.4f",
+                          key="int_axis_min", label_visibility="collapsed")
+        _ic2.number_input("max ∫IN1 dt", step=0.001, format="%.4f",
+                          key="int_axis_max", label_visibility="collapsed")
+        st.caption("∫IN1×IN2 dt")
+        _mc1, _mc2 = st.columns(2)
+        _mc1.number_input("min ∫IN1×IN2 dt", step=0.001, format="%.4f",
+                          key="multi_diag_ymin", label_visibility="collapsed")
+        _mc2.number_input("max ∫IN1×IN2 dt", step=0.001, format="%.4f",
+                          key="multi_diag_ymax", label_visibility="collapsed")
 
     with st.expander("Speichern / Laden", expanded=st.session_state.sub_speichern, key="sub_speichern", on_change=_SUB_EXPANDER_CBS['sub_speichern']):
         _json_str = json.dumps(
@@ -853,8 +912,16 @@ offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
 _hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
 _zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
 
+# SG-VORFILTER auf Rohkanäle – VOR Y-Offset, damit der Offset auf geglätteten Werten liegt
+_sg_params = tuple(
+    (bool(st.session_state.get(f'ch{i}_sg_en', False)),
+     int(st.session_state.get(f'ch{i}_sg_win', 5)))
+    for i in range(1, len(sensor_namen) + 1)
+)
+_df_raw_filt = _apply_sg_vorfilter_cached(df_raw, kanal_namen_tuple, _sg_params)
+
 df_full, sample_rate = _build_display_df_cached(
-    df_raw, file_type, sample_rate, kanal_namen_tuple, offs,
+    _df_raw_filt, file_type, sample_rate, kanal_namen_tuple, offs,
     zeit_hz_faktor=_hz_faktor,
 )
 
@@ -905,28 +972,6 @@ max_zeit_full = float(df_use['Zeit (ms)'].iloc[-1])
 max_idx_full  = len(df_use) - 1
 
 # ---------------------------------------------------------------------------
-# AUTO-RESET BEI NEUER DATEI – guard, falls Sidebar-Reset nicht greifen konnte
-# ---------------------------------------------------------------------------
-
-if st.session_state.last_file_name != uploaded_file.name:
-    total_time_ms = float(df_use['Zeit (ms)'].iloc[-1])
-    for i, name in enumerate(sensor_namen, 1):
-        off_init = float(df_raw[name].min()) * -1.0
-        st.session_state[f'off{i}']        = off_init
-        st.session_state[f'off{i}_slider'] = off_init
-    for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
-        st.session_state[f'off{i}']        = 0.0
-        st.session_state[f'off{i}_slider'] = 0.0
-    for i in range(1, N_KANÄLE + 1):
-        st.session_state[f'x_off{i}'] = 0.0
-    _setze_cursor_position(total_time_ms)
-    st.session_state.crop_start     = None
-    st.session_state.crop_end       = None
-    st.session_state.zoom_token    += 1
-    st.session_state.last_file_name = uploaded_file.name
-    st.rerun()
-
-# ---------------------------------------------------------------------------
 # CROP-LOGIK
 # ---------------------------------------------------------------------------
 
@@ -934,20 +979,18 @@ crop_active = (
     st.session_state.crop_start is not None
     and st.session_state.crop_end is not None
 )
-_CURSOR_STEP = 0.001   # Slider-Schrittweite für XA/XB
 
 if crop_active:
     ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _hz_faktor)
     ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _hz_faktor)
     df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
-    # Auf Slider-Schrittgitter runden damit (xa - min_zeit) immer ein Vielfaches von step ist
-    min_zeit = float(np.floor(df['Zeit (ms)'].iloc[0]  / _CURSOR_STEP) * _CURSOR_STEP)
-    max_zeit = float(np.ceil( df['Zeit (ms)'].iloc[-1] / _CURSOR_STEP) * _CURSOR_STEP)
+    min_zeit = round(float(df['Zeit (ms)'].iloc[0]),  3)
+    max_zeit = round(float(df['Zeit (ms)'].iloc[-1]), 3)
     max_idx  = len(df) - 1
 else:
     df       = df_use
     min_zeit = 0.0
-    max_zeit = max_zeit_full
+    max_zeit = round(max_zeit_full, 3)
     max_idx  = max_idx_full
 
 # ---------------------------------------------------------------------------
@@ -979,20 +1022,14 @@ sichtbare_sensor_namen = [
 _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
 v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_einheit)
 
-xa = float(np.clip(st.session_state.xa, min_zeit, max_zeit))
-xb = float(np.clip(st.session_state.xb, min_zeit, max_zeit))
-if (xa != st.session_state.xa
-        or xa != st.session_state.get('xa_sw', xa)
-        or xa != st.session_state.get('xa_nw', xa)):
+xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 3)
+xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
+if xa != st.session_state.get('xa_sw', xa) or xa != st.session_state.xa:
     st.session_state.xa    = xa
     st.session_state.xa_sw = xa
-    st.session_state.xa_nw = xa
-if (xb != st.session_state.xb
-        or xb != st.session_state.get('xb_sw', xb)
-        or xb != st.session_state.get('xb_nw', xb)):
+if xb != st.session_state.get('xb_sw', xb) or xb != st.session_state.xb:
     st.session_state.xb    = xb
     st.session_state.xb_sw = xb
-    st.session_state.xb_nw = xb
 
 with st.sidebar.expander("Diagrammarker", expanded=False):
     st.caption("Peak-Marker", help="Sichtbarkeit der Peak-Marker im Diagramm.")
@@ -1037,9 +1074,15 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
 
 show_integral = st.sidebar.toggle(
-    f"∫ d {active_sensor} dt (A-B) anzeigen", key="show_integral",
-    help="Integriert den aktiven Kanal und Zeichnet die Fläche zwischen XA und XB transparent ein.",
+    f"∫{active_sensor} dt im Diagramm", key="show_integral",
+    help="Zeichnet die Fläche unter dem aktiven Kanal zwischen XA und XB transparent ein (Integralbereich).",
 )
+show_integral_curve = False
+if show_integral:
+    show_integral_curve = st.sidebar.toggle(
+        f"∫{active_sensor} dt Verlauf", key="show_integral_curve",
+        help="Zeichnet den kumulativen Integralverlauf zwischen XA und XB auf einer eigenen Y-Achse (Startwert 0 bei XA).",
+    )
 show_velocity = st.sidebar.toggle(
     f"d {active_sensor} /dt anzeigen", key="show_velocity",
     help="Zeigt die 1. Ableitung (Geschwindigkeit) des aktiven Kanals auf einer zweiten Y-Achse.",
@@ -1087,6 +1130,14 @@ if show_multi_kanal:
         key="multi_kanal_auswahl",
         help="2 Kanäle für die Multiplikation auswählen.",
     )
+    if len(st.session_state.get('multi_kanal_auswahl', [])) == 2:
+        _mc_names = st.session_state['multi_kanal_auswahl']
+        st.sidebar.toggle(
+            f"∫{_mc_names[0]}×{_mc_names[1]} dt im Diagramm",
+            key="show_multi_diag",
+            help="Zeichnet die Produkt-Kurve (IN1×IN2) und den Integralbereich zwischen XA und XB im Diagramm.",
+        )
+show_multi_diag = st.session_state.get('show_multi_diag', False)
 
 _SPANNUNG_ZU_V = {'V': 1.0, 'mV': 1e-3}
 show_widerstand_integral = st.sidebar.toggle(
@@ -1197,8 +1248,8 @@ if show_widerstand_integral and _w_kanal in df.columns and _w_kohm > 0 and idx_e
 
 arr_full  = df[active_sensor].values
 dt_step_s = 1.0 / sample_rate
-sg_v_roh  = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length, 1)
-sg_a_roh  = reader.berechne_sg_ableitung(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+sg_v_roh  = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length, 1)
+sg_a_roh  = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
 
 # Peak-Marker-Initialisierung (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
@@ -1333,7 +1384,14 @@ for _n in sichtbare_sensor_namen:
 velocity_ok     = velocity is not None
 acceleration_ok = acceleration is not None
 _kanal_farbe_map = {name: KANAL_FARBEN[sensor_namen.index(name)] for name in sichtbare_sensor_namen}
-kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout(
+_int_einheit = f'{_aktiv_einheit}·{_zeit_einheit}'
+_mc_auswahl_diag = st.session_state.get('multi_kanal_auswahl', [])
+_mc_diag_eu = (
+    _produkt_einheit(kanal_einheit_map.get(_mc_auswahl_diag[0],'?'),
+                     kanal_einheit_map.get(_mc_auswahl_diag[1],'?')) + f'·{_zeit_einheit}'
+    if show_multi_diag and len(_mc_auswahl_diag) == 2 else ''
+)
+kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x_domain_end = _yachsen_layout(
     sichtbare_sensor_namen, kanal_einheit_map, y_range_plot,
     show_velocity, velocity_ok, show_acceleration, acceleration_ok,
     v_einheit=v_einheit, a_einheit=a_einheit,
@@ -1341,6 +1399,10 @@ kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, x_domain_end = _yachsen_layout
     y_ranges_fallback=_yrange_fallback,
     kanal_bereiche=_kanal_bereiche,
     kanal_ch_num=_sensor_ch_num,
+    show_integral_curve=show_integral_curve,
+    int_einheit=_int_einheit,
+    show_multi_diag=show_multi_diag and len(_mc_auswahl_diag) == 2,
+    multi_diag_einheit=_mc_diag_eu,
 )
 active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -1359,7 +1421,7 @@ _baue_traces(
     sop_linien,
     show_velocity, velocity, v_yaxis,
     show_acceleration, acceleration, a_yaxis,
-    show_integral,
+    show_integral, int_yaxis, show_integral_curve,
 )
 
 _y_lim_keys = (
@@ -1380,6 +1442,26 @@ fig.update_layout(
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
 )
+# ∫IN1×IN2 dt Verlauf im Diagramm — kumulatives Integral des Produkts zwischen XA und XB
+if show_multi_diag and len(_mc_auswahl_diag) == 2:
+    _mc_a_d, _mc_b_d = _mc_auswahl_diag
+    if _mc_a_d in df_plot.columns and _mc_b_d in df_plot.columns:
+        _prod_t    = df_plot['Zeit (ms)'].values
+        _prod_inst = df_plot[_mc_a_d].values * df_plot[_mc_b_d].values
+        _dt_prod   = float(_prod_t[1] - _prod_t[0]) if len(_prod_t) > 1 else 1.0
+        _mask_ab   = (_prod_t >= min(xa, xb)) & (_prod_t <= max(xa, xb))
+        if np.any(_mask_ab):
+            _x_ab = _prod_t[_mask_ab]
+            _y_ab = np.cumsum(_prod_inst[_mask_ab]) * _dt_prod
+            _y_ab -= _y_ab[0]             # Startwert 0 am linken Slider
+            fig.add_trace(go.Scatter(
+                x=_x_ab, y=_y_ab,
+                mode='lines', name=f'∫{_mc_a_d}×{_mc_b_d} dt',
+                line=dict(color='rgba(130,0,200,0.85)', width=2),
+                yaxis=multi_diag_yaxis,
+            ))
+            _zeichne_integral_flaeche(fig, _x_ab, _y_ab, yaxis=multi_diag_yaxis)
+
 st.plotly_chart(fig, width="stretch", key="main_chart")
 
 # ---------------------------------------------------------------------------
@@ -1398,13 +1480,13 @@ with c_slider:
         "XA", min_zeit, max_zeit,
         key="xa_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xa_from_slider, label_visibility="collapsed",
-        help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
+        help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
     st.slider(
         "XB", min_zeit, max_zeit,
         key="xb_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xb_from_slider, label_visibility="collapsed",
-        help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Zeitmarker & Basis' eingeben.",
+        help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
 
 # ---------------------------------------------------------------------------
@@ -1421,14 +1503,10 @@ with btn_col1:
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
         st.session_state.crop_start = crop_t0
         st.session_state.crop_end   = crop_t1
-        _xa_new = float(min(xa, xb))
-        _xb_new = float(max(xa, xb))
+        _xa_new = round(float(min(xa, xb)), 3)
+        _xb_new = round(float(max(xa, xb)), 3)
         st.session_state.xa    = _xa_new
-        st.session_state.xa_sw = _xa_new
-        st.session_state.xa_nw = _xa_new
         st.session_state.xb    = _xb_new
-        st.session_state.xb_sw = _xb_new
-        st.session_state.xb_nw = _xb_new
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
@@ -1527,6 +1605,19 @@ if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_va
     metrics[f"∫{_w_kanal}/R dt (A-B) [R={_w_kohm_exp:.3g} kΩ]"] = _fmt_integral(
         widerstand_integral_val, 'A', _zeit_einheit
     )
+_multi_diag_export = None
+if show_multi_diag and len(_mc_auswahl_diag) == 2:
+    _mc_d0, _mc_d1 = _mc_auswahl_diag
+    if _mc_d0 in df.columns and _mc_d1 in df.columns:
+        _multi_diag_export = {
+            'x':      df['Zeit (ms)'].values,
+            'y':      df[_mc_d0].values * df[_mc_d1].values,
+            'einheit': _produkt_einheit(kanal_einheit_map.get(_mc_d0,'?'), kanal_einheit_map.get(_mc_d1,'?')),
+            'label':  f"{_mc_d0}×{_mc_d1}",
+            'ymin':   float(st.session_state.get('multi_diag_ymin', 0)),
+            'ymax':   float(st.session_state.get('multi_diag_ymax', 0)),
+        }
+
 export_format = st.sidebar.radio(
     "Format:", ["PDF", "PNG", "CSV (Oszilloskop)"], horizontal=True,
     label_visibility="collapsed",
@@ -1587,6 +1678,8 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     zeit_einheit=_zeit_einheit,
                     kanal_ch_num=_sensor_ch_num,
                     show_integral=show_integral,
+                    show_integral_curve=show_integral_curve,
+                    multi_diag_data=_multi_diag_export,
                 )
                 if export_format == "PDF":
                     file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)

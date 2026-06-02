@@ -56,6 +56,15 @@ def clamp_savgol_fenster(fenster: int, n: int) -> int:
     return fenster
 
 
+def glaette_signal(signal: np.ndarray, window_length: int, polyorder: int = 3) -> np.ndarray:
+    """SG-Glättung (deriv=0) zur Vorfilterung quantisierter Signale."""
+    if len(signal) < 4:
+        return signal.copy()
+    win = clamp_savgol_fenster(window_length, len(signal))
+    poly = min(polyorder, win - 1)
+    return savgol_filter(signal, win, poly, deriv=0, mode='mirror')
+
+
 def berechne_sg_ableitung(
     signal: np.ndarray,
     dt_s: float,
