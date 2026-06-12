@@ -108,6 +108,8 @@ defaults = {
     'sample_rate_unit': 'µs',
     'sample_rate_unit_toggle': True,
     'skip_rows': 12,
+    'csv_header_aus_zeile1': False,
+    'csv_einheit_aus_zeile2': False,
     'max_samples': 8000,
     # Crop-State: None = "Show All", sonst t_start / t_end als float
     'crop_start': None,
@@ -179,7 +181,7 @@ for key, val in defaults.items():
 EINSTELLUNGEN_KEYS: list[str] = [
     'file_type_radio',
     'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
-    'skip_rows', 'max_samples',
+    'skip_rows', 'csv_header_aus_zeile1', 'csv_einheit_aus_zeile2', 'max_samples',
     'xa', 'xb',
     'show_v_avg', 'mark_vmax', 'mark_vmin', 'mark_afall', 'mark_arise',
     'show_rect_fit_top', 'show_rect_fit',
@@ -640,6 +642,11 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         if file_type == "CSV plain":
             st.number_input("Kopfzeilen überspringen", min_value=0, step=1, key="skip_rows",
                             help="Anzahl der Zeilen am Dateianfang die ignoriert werden (z. B. Metadaten-Header).")
+            st.toggle("Kanalnamen aus erster Zeile", key="csv_header_aus_zeile1",
+                      help="Liest die erste Zeile der CSV-Datei als Kanalnamen (unabhängig von 'Kopfzeilen überspringen').")
+            if st.session_state.get('csv_header_aus_zeile1', False):
+                st.toggle("Kanal Einheit aus zweiter Zeile", key="csv_einheit_aus_zeile2",
+                          help=f"Liest die zweite Zeile als Kanaleinheiten. Gültige Werte: {', '.join(EINHEIT_OPTIONEN)}")
         st.number_input("Max. Samples importieren", min_value=0, step=1000, key="max_samples",
                         help="Maximale Anzahl der zu importierenden Datenpunkte (0 = alle importieren).")
 
@@ -655,9 +662,27 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         st.session_state['n_kanäle_datei'] = _n_show
 
     if uploaded_file and _n_show > 0:
-        for _i in range(1, _n_show + 1):
-            if not st.session_state.get(f'ch{_i}_name', '').strip():
-                st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
+        if (file_type == "CSV plain"
+                and st.session_state.get('csv_header_aus_zeile1', False)):
+            _header_namen = reader.peek_csv_plain_kanalnames(
+                uploaded_file.getvalue(), _n_show
+            )
+            for _i, _hname in enumerate(_header_namen, 1):
+                st.session_state[f'ch{_i}_name'] = _hname
+            for _i in range(len(_header_namen) + 1, _n_show + 1):
+                if not st.session_state.get(f'ch{_i}_name', '').strip():
+                    st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
+            if st.session_state.get('csv_einheit_aus_zeile2', False):
+                _header_einh = reader.peek_csv_plain_einheiten(
+                    uploaded_file.getvalue(), _n_show, EINHEIT_OPTIONEN
+                )
+                for _i, _einh in enumerate(_header_einh, 1):
+                    if _einh is not None:
+                        st.session_state[f'ch{_i}_einheit'] = _einh
+        else:
+            for _i in range(1, _n_show + 1):
+                if not st.session_state.get(f'ch{_i}_name', '').strip():
+                    st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
 
     with st.expander("Kanäle", expanded=st.session_state.sub_kanaele, key="sub_kanaele", on_change=_SUB_EXPANDER_CBS['sub_kanaele']):
         st.caption("Leer: wird beim Schließen automatisch als 'Kanal N' benannt.")
@@ -1039,12 +1064,10 @@ v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_ei
 
 xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 3)
 xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
-if xa != st.session_state.get('xa_sw', xa) or xa != st.session_state.xa:
-    st.session_state.xa    = xa
-    st.session_state.xa_sw = xa
-if xb != st.session_state.get('xb_sw', xb) or xb != st.session_state.xb:
-    st.session_state.xb    = xb
-    st.session_state.xb_sw = xb
+st.session_state.xa    = xa
+st.session_state.xa_sw = xa
+st.session_state.xb    = xb
+st.session_state.xb_sw = xb
 
 with st.sidebar.expander("Diagrammarker", expanded=False):
     st.caption("Peak-Marker", help="Sichtbarkeit der Peak-Marker im Diagramm.")
@@ -1052,15 +1075,6 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     mark_vmin  = st.toggle("D-min",  key="mark_vmin",  help="Linie des stärksten Abfalls (negativster Geschwindigkeitspeak) einzeichnen.")
     mark_afall = st.toggle("D2-max", key="mark_afall", help="Marker des größten Beschleunigungs-Peaks (fallende Flanke) einzeichnen.")
     mark_arise = st.toggle("D2-min", key="mark_arise", help="Marker des negativsten Beschleunigungs-Peaks (steigende Flanke) einzeichnen.")
-    st.divider()
-    st.caption("Diagrammlinien")
-    show_v_avg       = st.toggle("Schnittlinie A–B", key="show_v_avg",
-                                 help="Verbindungslinie von XA nach XB – zeigt die mittlere Änderungsrate dIN1/dt (A-B).")
-    show_rect_fit_top = st.toggle("Rechteck-Fit Top/Bot.", key="show_rect_fit_top",
-                                  help="Obere und untere gestrichelte Linie des Rechteck-Fits einzeichnen.")
-    show_rect_fit    = st.toggle("Rechteck-Fit füllen", key="show_rect_fit",
-                                 help="Vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.")
-    st.divider()
     _tb_f = _hz_faktor / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
     _x_len = max(1e-9, max_zeit - min_zeit)
     _tb_min_curr = _x_len / 200
@@ -1087,6 +1101,14 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
         help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
     v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
+    st.divider()
+    st.caption("Diagrammlinien")
+    show_v_avg       = st.toggle("Schnittlinie A–B", key="show_v_avg",
+                                 help="Verbindungslinie von XA nach XB – zeigt die mittlere Änderungsrate dIN1/dt (A-B).")
+    show_rect_fit_top = st.toggle("Rechteck-Fit Top/Bot.", key="show_rect_fit_top",
+                                  help="Obere und untere gestrichelte Linie des Rechteck-Fits einzeichnen.")
+    show_rect_fit    = st.toggle("Rechteck-Fit füllen", key="show_rect_fit",
+                                 help="Vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.")
 
 show_integral = st.sidebar.toggle(
     f"∫{active_sensor} dt im Diagramm", key="show_integral",
@@ -1287,15 +1309,14 @@ v_sop            = float('nan')
 if idx_end > idx_start:
     if sg_v_roh is not None:
         sg_v_signed = sg_v_roh * v_faktor
-        sg_v_abs    = np.abs(sg_v_signed)
 
-        # D-max: betragsmäßig höchste Geschwindigkeit
-        sg_v_slice        = sg_v_abs[idx_start:idx_end + 1]
-        idx_vmax_peak_loc = int(np.argmax(sg_v_slice))
+        # D-max: höchste (positivste) Geschwindigkeit – vorzeichenkorrekt
+        sg_v_signed_slice = sg_v_signed[idx_start:idx_end + 1]
+        idx_vmax_peak_loc = int(np.argmax(sg_v_signed_slice))
         idx_vmax_peak     = idx_start + idx_vmax_peak_loc
         iv_start          = max(0, idx_vmax_peak - halbes_zeitfenster)
         iv_ende           = min(max_idx, idx_vmax_peak + halbes_zeitfenster)
-        v_max             = float(np.mean(sg_v_abs[iv_start:iv_ende + 1]))
+        v_max             = float(np.mean(sg_v_signed[iv_start:iv_ende + 1]))
         if 0 <= iv_start <= max_idx and 0 <= iv_ende <= max_idx:
             t_vmax_start = df.loc[iv_start, 'Zeit (ms)']
             y_vmax_start = df.loc[iv_start, active_sensor]
@@ -1303,8 +1324,7 @@ if idx_end > idx_start:
             y_vmax_ende  = df.loc[iv_ende,  active_sensor]
             has_vmax     = True
 
-        # D-min: stärkste fallende Geschwindigkeit (negativster vorzeichenbehafteter Peak)
-        sg_v_signed_slice  = sg_v_signed[idx_start:idx_end + 1]
+        # D-min: negativster vorzeichenbehafteter Peak
         idx_vmin_peak_loc  = int(np.argmin(sg_v_signed_slice))
         idx_vmin_peak      = idx_start + idx_vmin_peak_loc
         iv_min_start       = max(0, idx_vmin_peak - halbes_zeitfenster)
@@ -1520,8 +1540,8 @@ with btn_col1:
         st.session_state.crop_end   = crop_t1
         _xa_new = round(float(min(xa, xb)), 3)
         _xb_new = round(float(max(xa, xb)), 3)
-        st.session_state.xa    = _xa_new
-        st.session_state.xb    = _xb_new
+        st.session_state.xa = _xa_new
+        st.session_state.xb = _xb_new
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
@@ -1634,9 +1654,9 @@ if show_multi_diag and len(_mc_auswahl_diag) == 2:
         }
 
 export_format = st.sidebar.radio(
-    "Format:", ["PDF", "PNG", "CSV (Oszilloskop)"], horizontal=True,
+    "Format:", ["PDF", "PNG", "CSV (Oszilloskop)", "CSV plain"], horizontal=True,
     label_visibility="collapsed",
-    help="PDF/PNG: Diagramm-Export. CSV: Re-importierbar als 'Oszilloskop CSV' mit allen sichtbaren Kanälen.",
+    help="PDF/PNG: Diagramm-Export. CSV (Oszilloskop): Re-importierbar als 'Oszilloskop CSV'. CSV plain: Zeile 1 = Kanalnamen, Zeile 2 = Einheiten, re-importierbar mit 'Kanalnamen aus erster Zeile'.",
 )
 if st.sidebar.button("📥 Export erstellen", width="stretch",
                      help="Erstellt die Exportdatei im gewählten Format – Download-Button erscheint danach."):
@@ -1671,6 +1691,28 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     mime="text/csv",
                     width="stretch",
                 )
+
+            elif export_format == "CSV plain":
+                # CSV plain: Zeile 1 = Kanalnamen, Zeile 2 = Einheiten, ab Zeile 3 Daten.
+                # Re-importierbar mit 'Kanalnamen aus erster Zeile' + 'Kanal Einheit aus zweiter Zeile'
+                # und 'Kopfzeilen überspringen' = 2.
+                _ex_kanäle  = sichtbare_sensor_namen
+                _valid_mask = df[_ex_kanäle].notna().all(axis=1)
+                _df_ex      = df[_valid_mask].reset_index(drop=True)
+                header1 = ','.join(_ex_kanäle)
+                header2 = ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
+                _rows = [header1, header2]
+                for _ri in range(len(_df_ex)):
+                    _rows.append(','.join(f"{_df_ex[_k].iloc[_ri]:.8e}" for _k in _ex_kanäle))
+                _csv_bytes = '\n'.join(_rows).encode('utf-8')
+                st.sidebar.download_button(
+                    label="💾 CSV herunterladen",
+                    data=_csv_bytes,
+                    file_name=f"{stem}_plain.csv",
+                    mime="text/csv",
+                    width="stretch",
+                )
+
             else:
                 chart_png = build_chart_png(
                     df, sichtbare_sensor_namen, active_sensor,

@@ -133,26 +133,109 @@ def peek_oszilloskop_header(file_bytes: bytes) -> tuple[list[int], list[str]]:
     return kanal_indices, einheiten
 
 
+def peek_csv_plain_einheiten(file_bytes: bytes, n_kanäle: int,
+                             erlaubte_einheiten: list[str]) -> list[str | None]:
+    """Liest Einheiten aus der ZWEITEN Zeile einer CSV plain Datei.
+
+    Gibt bis zu n_kanäle Einheitenstrings zurück; Einträge sind None wenn die
+    Zelle leer ist oder nicht in erlaubte_einheiten enthalten ist.
+    """
+    try:
+        content = file_bytes.decode('utf-8', errors='ignore')
+        lines   = [l for l in content.splitlines() if l.strip()]
+        if len(lines) < 2:
+            return [None] * n_kanäle
+        second_line = lines[1]
+        sep         = ';' if ';' in second_line else ','
+        parts       = [p.strip().strip('"').strip("'") for p in second_line.split(sep)]
+        result: list[str | None] = []
+        for part in parts[:n_kanäle]:
+            result.append(part if part in erlaubte_einheiten else None)
+        while len(result) < n_kanäle:
+            result.append(None)
+        return result
+    except Exception:
+        return [None] * n_kanäle
+
+
+def peek_csv_plain_kanalnames(file_bytes: bytes, n_kanäle: int) -> list[str]:
+    """Liest Spaltennamen aus der ERSTEN Zeile einer CSV plain Datei.
+
+    Gibt bis zu n_kanäle Namen zurück.
+    Leere Liste wenn die erste nicht-leere Zeile numerische Werte enthält.
+    """
+    try:
+        content = file_bytes.decode('utf-8', errors='ignore')
+        lines   = [l for l in content.splitlines() if l.strip()]
+        if not lines:
+            return []
+        first_line = lines[0]
+        sep        = ';' if ';' in first_line else ','
+        parts      = [p.strip().strip('"').strip("'") for p in first_line.split(sep)]
+        try:
+            float(parts[0].replace(',', '.'))
+            return []   # Erste Zelle numerisch → kein Header
+        except ValueError:
+            pass
+        return [p for p in parts if p][:n_kanäle]
+    except Exception:
+        return []
+
+
+def _sniff_csv_params(file_bytes: bytes, skip_rows: int) -> tuple[str, str]:
+    """Erkennt Trennzeichen und Dezimalzeichen einer CSV-Datei automatisch.
+
+    Gibt (sep, decimal) zurück:
+    - (';', ',')  bei deutschem Format  (Semikolon-getrennt, Komma-Dezimal)
+    - (';', '.')  bei Semikolon-getrennt mit Punkt-Dezimal
+    - (',', '.')  bei englischem Format (Komma-getrennt, Punkt-Dezimal)
+    """
+    try:
+        content    = file_bytes.decode('utf-8', errors='ignore')
+        data_lines = [l for l in content.splitlines()[skip_rows:skip_rows + 10] if l.strip()]
+        sample     = '\n'.join(data_lines)
+
+        if ';' not in sample:
+            return ',', '.'
+
+        # Semikolon ist Trennzeichen – Dezimalzeichen aus erstem Datenwert ableiten
+        for line in data_lines:
+            if ';' not in line:
+                continue
+            first_token = line.split(';')[0].strip()
+            if ',' in first_token:
+                return ';', ','
+            if '.' in first_token:
+                return ';', '.'
+        return ';', ','   # Standard-Annahme: deutsches Format
+
+    except Exception:
+        return ',', '.'
+
+
 def read_csv_plain(
     file_bytes: bytes,
     skip_rows: int,
     max_samples: int,
     kanal_namen: tuple[str, ...],
 ) -> pd.DataFrame:
-    """Liest CSV plain Format (Komma-getrennt, keine Zeitachse in der Datei).
+    """Liest CSV plain Format (keine Zeitachse in der Datei).
 
+    Erkennt automatisch ob Trennzeichen ',' oder ';' und ob Dezimalzeichen
+    '.' oder ',' verwendet wird.
     Gibt DataFrame mit benannten Kanalspalten zurück, OHNE 'Zeit (ms)'.
     Zeitachse über build_time_axis() oder build_display_df() erzeugen.
     """
     n_kanäle = len(kanal_namen)
     nrows    = max_samples if max_samples > 0 else None
+    sep, dec = _sniff_csv_params(file_bytes, skip_rows)
 
-    probe      = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', header=None, skiprows=skip_rows, nrows=1)
+    probe      = pd.read_csv(io.BytesIO(file_bytes), sep=sep, decimal=dec, header=None, skiprows=skip_rows, nrows=1)
     first_cell = str(probe.iloc[0, 0]).strip()
 
     try:
         float(first_cell)
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', header=None, skiprows=skip_rows, nrows=nrows)
+        df = pd.read_csv(io.BytesIO(file_bytes), sep=sep, decimal=dec, header=None, skiprows=skip_rows, nrows=nrows)
         df = df.dropna(axis=1, how='all')
         erste_zeile = df.iloc[0]
         df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
@@ -167,7 +250,7 @@ def read_csv_plain(
             result_df[name] = df[data_cols[i]].values
 
     except ValueError as exc:
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', nrows=nrows)
+        df = pd.read_csv(io.BytesIO(file_bytes), sep=sep, decimal=dec, nrows=nrows)
         df = df.dropna(axis=1, how='all')
         erste_zeile = df.iloc[0]
         df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
