@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.04"
+VERSION = "v1.01.05"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -121,6 +121,9 @@ defaults = {
     'mark_arise': False,   # D2-min Marker anzeigen
     'show_rect_fit_top': False,
     'show_rect_fit': False,
+    'show_y_slider': False,
+    'ya_sw': 0.0,
+    'yb_sw': 0.0,
     'show_velocity': False,
     'window_length': 30,       # freier Key – nie Widget-Key
     'window_length_sw': 30,    # Widget-Key: Slider Glättung D
@@ -186,6 +189,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'xa', 'xb',
     'show_v_avg', 'mark_vmax', 'mark_vmin', 'mark_afall', 'mark_arise',
     'show_rect_fit_top', 'show_rect_fit',
+    'show_y_slider', 'ya_sw', 'yb_sw',
     'show_velocity', 'window_length',
     'show_acceleration', 'window_length_accel',
     'show_sop', 'sop_percent',
@@ -437,6 +441,22 @@ def _produkt_einheit(einh_a: str, einh_b: str) -> str:
     if einh_a in _EINH_SPANNG and einh_b in _EINH_STROM:
         return f"{einh_a}{einh_b}"    # V×A → VA,  V×mA → VmA,  mV×A → mVA
     return f"{einh_a}·{einh_b}"
+
+
+def _slider_schritt_125(spanne: float, max_schritte: int = 500) -> float:
+    """Wählt aus der 1-2-5-Reihe den kleinsten Schritt, der ≤ max_schritte ergibt.
+
+    Kandidatenreihe: …0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10…
+    """
+    if spanne <= 0:
+        return 1.0
+    import math
+    mag   = 10 ** math.floor(math.log10(spanne / max_schritte))
+    for m in (1, 2, 5, 10, 20, 50):
+        s = mag * m
+        if spanne / s <= max_schritte:
+            return float(round(s, 10))
+    return float(mag * 100)
 
 
 def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
@@ -1156,6 +1176,34 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
                                   help="Obere und untere gestrichelte Linie des Rechteck-Fits einzeichnen.")
     show_rect_fit    = st.toggle("Rechteck-Fit füllen", key="show_rect_fit",
                                  help="Vertikale Kantenlinien und hellgrüne Füllung für alle erkannten Rechteck-Pulse.")
+    show_y_slider = st.toggle("Y-Slider", key="show_y_slider",
+                               help="Zwei horizontale Hilfslinien (YA / YB) frei im Diagramm positionierbar.")
+    if show_y_slider and df_raw is not None and sensor_namen:
+        # Y-Bereich aus gespeichertem Y-Achsen-Skalenbereich des aktiven Kanals (vorheriger Renderdurchlauf)
+        _ys_lo = float(st.session_state.get('_ys_axis_lo', 0.0))
+        _ys_hi = float(st.session_state.get('_ys_axis_hi', 0.0))
+        if _ys_lo == _ys_hi:
+            # Fallback wenn noch kein Skalenbereich gespeichert (erster Lauf)
+            _ys_col  = df_use[active_sensor] if active_sensor in df_use.columns else df_use.iloc[:, 0]
+            _ys_lo   = float(_ys_col.min())
+            _ys_hi   = float(_ys_col.max())
+            _ys_span = _ys_hi - _ys_lo
+            _ys_hi  += _ys_span * Y_PUFFER
+        if _ys_lo == _ys_hi:
+            _ys_hi = _ys_lo + 1.0
+        _ys_step  = _slider_schritt_125(_ys_hi - _ys_lo)
+        _ys_dez   = max(0, -int(np.floor(np.log10(_ys_step)))) if _ys_step < 1 else 0
+        _ys_fmt   = f"%.{_ys_dez}f"
+        _ya_val   = float(np.clip(st.session_state.get('ya_sw', _ys_lo), _ys_lo, _ys_hi))
+        _yb_val   = float(np.clip(st.session_state.get('yb_sw', _ys_hi), _ys_lo, _ys_hi))
+        st.session_state['ya_sw'] = _ya_val
+        st.session_state['yb_sw'] = _yb_val
+        st.slider("YA", _ys_lo, _ys_hi, step=_ys_step, format=_ys_fmt,
+                  key="ya_sw", label_visibility="collapsed",
+                  help="Horizontale Hilfslinie YA (untere Referenz).")
+        st.slider("YB", _ys_lo, _ys_hi, step=_ys_step, format=_ys_fmt,
+                  key="yb_sw", label_visibility="collapsed",
+                  help="Horizontale Hilfslinie YB (obere Referenz).")
 
 show_integral = st.sidebar.toggle(
     f"∫{active_sensor} dt im Diagramm", key="show_integral",
@@ -1488,6 +1536,13 @@ kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x
 )
 active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
+# Y-Achsen-Skalenbereich des aktiven Kanals für Y-Slider speichern (nächster Renderdurchlauf)
+_ys_layout_key = 'yaxis' if active_yaxis == 'y' else f'yaxis{active_yaxis[1:]}'
+_ys_axis_range = layout_yachsen.get(_ys_layout_key, {}).get('range', None)
+if _ys_axis_range and len(_ys_axis_range) == 2:
+    st.session_state['_ys_axis_lo'] = float(_ys_axis_range[0])
+    st.session_state['_ys_axis_hi'] = float(_ys_axis_range[1])
+
 fig = go.Figure()
 
 _baue_traces(
@@ -1543,6 +1598,14 @@ if show_multi_diag and len(_mc_auswahl_diag) == 2:
                 yaxis=multi_diag_yaxis,
             ))
             _zeichne_integral_flaeche(fig, _x_ab, _y_ab, yaxis=multi_diag_yaxis)
+
+if show_y_slider:
+    _ya_line = float(st.session_state.get('ya_sw', 0.0))
+    _yb_line = float(st.session_state.get('yb_sw', 0.0))
+    fig.add_hline(y=_ya_line, line_dash="dash", line_color=FARBE_CURSOR,
+                  annotation_text=f"YA {_ya_line:.2f}", annotation_position="top left")
+    fig.add_hline(y=_yb_line, line_dash="dash", line_color="darkorange",
+                  annotation_text=f"YB {_yb_line:.2f}", annotation_position="top left")
 
 st.plotly_chart(fig, width="stretch", key="main_chart")
 
@@ -1638,7 +1701,22 @@ if show_multi_kanal and len(_mc_auswahl) == 2:
     a4.metric(f"∫{_mc_auswahl[0]}×{_mc_auswahl[1]} dt (A-B)",
               _fmt_integral(multi_integral_val, _produkt_einheit(_mc_einh_a, _mc_einh_b), _zeit_einheit))
 
-# Zeile 4 – Widerstands-Integral (nur wenn aktiviert)
+# Zeile 4 – SOP (nur wenn aktiviert und Wert vorhanden)
+if show_sop and not np.isnan(v_sop):
+    s1, *_ = st.columns(4)
+    s1.metric(f"SOP d{active_sensor}/dt", _fmt_val(v_sop, v_einheit))
+
+# Zeile 5 – Y-Slider Delta (nur wenn aktiviert)
+if show_y_slider:
+    _ya_m = float(st.session_state.get('ya_sw', 0.0))
+    _yb_m = float(st.session_state.get('yb_sw', 0.0))
+    _y_delta = abs(_yb_m - _ya_m)
+    yd1, yd2, yd3, *_ = st.columns(4)
+    yd1.metric("YA", f"{_ya_m:.2f} {_aktiv_einheit}")
+    yd2.metric("YB", f"{_yb_m:.2f} {_aktiv_einheit}")
+    yd3.metric("ΔYA–YB", f"{_y_delta:.2f} {_aktiv_einheit}")
+
+# Zeile 6 – Widerstands-Integral (nur wenn aktiviert)
 if show_widerstand_integral and _w_kanal:
     _w_kohm_d = float(st.session_state.get('widerstand_kohm', 200.0))
     w1, *_ = st.columns(4)
@@ -1666,7 +1744,6 @@ metrics = {
     f"Δd {active_sensor} /dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
     f"d {active_sensor} /dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
     f"d {active_sensor} /dt min":    _fmt_val(v_min, v_einheit)            if not np.isnan(v_min) else "N/A",
-    "SOP":                          _fmt_val(v_sop, v_einheit)            if not np.isnan(v_sop) else "N/A",
     # 2. Ableitung
     f"d² {active_sensor} /dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
     f"d² {active_sensor} /dt² min Rise.": _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A",
@@ -1687,6 +1764,14 @@ if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_va
     metrics[f"∫{_w_kanal}/R dt (A-B) [R={_w_kohm_exp:.3g} kΩ]"] = _fmt_integral(
         widerstand_integral_val, 'A', _zeit_einheit
     )
+if show_sop and not np.isnan(v_sop):
+    metrics["SOP"] = _fmt_val(v_sop, v_einheit)
+if show_y_slider:
+    _ya_exp = float(st.session_state.get('ya_sw', 0.0))
+    _yb_exp = float(st.session_state.get('yb_sw', 0.0))
+    metrics["YA"] = f"{_ya_exp:.2f} {_aktiv_einheit}"
+    metrics["YB"] = f"{_yb_exp:.2f} {_aktiv_einheit}"
+    metrics["ΔYA–YB"] = f"{abs(_yb_exp - _ya_exp):.2f} {_aktiv_einheit}"
 _multi_diag_export = None
 if show_multi_diag and len(_mc_auswahl_diag) == 2:
     _mc_d0, _mc_d1 = _mc_auswahl_diag
@@ -1784,6 +1869,9 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     show_integral=show_integral,
                     show_integral_curve=show_integral_curve,
                     multi_diag_data=_multi_diag_export,
+                    show_y_slider=show_y_slider,
+                    y_slider_a=float(st.session_state.get('ya_sw', 0.0)),
+                    y_slider_b=float(st.session_state.get('yb_sw', 0.0)),
                 )
                 if export_format == "PDF":
                     file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)

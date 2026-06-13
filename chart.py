@@ -22,7 +22,7 @@ import reader
 # ---------------------------------------------------------------------------
 
 SPLIT_FAKTOR  = 15.0   # Y-Achsen-Aufteilung bei gleicher Einheit wenn Bereiche > Faktor abweichen
-STEP          = 0.07   # Plotly-Abstand zwischen rechten Y-Achsen (Anteil der Figure-Breite)
+STEP          = 0.08   # Plotly-Abstand zwischen rechten Y-Achsen (Anteil der Figure-Breite)
 Y_PUFFER      = 0.15   # Y-Bereich-Puffer oben (15 %) für alle Achsenbereiche
 X_DOMAIN_MIN  = 0.5    # Mindestbreite des Plot-Bereichs wenn viele rechte Achsen vorhanden
 
@@ -242,14 +242,19 @@ def _yachsen_layout(
     titel0, kanäle0 = final_achsen[0] if final_achsen else ('µm', [])
     rng0 = _rng(titel0, kanäle0) if final_achsen else None
     layout_yachsen: dict = {
-        'yaxis': dict(title=titel0, range=rng0 if rng0 else y_range_primaer,
+        'yaxis': dict(title=dict(text=titel0, standoff=15),
+                      range=rng0 if rng0 else y_range_primaer,
+                      ticklabelstandoff=10,
                       **_achsfarbe(kanäle0))
     }
 
     for idx, (yk, title, rng, farb_dict) in enumerate(rechte_achsen):
         pos = x_domain_end + STEP * idx
-        ax: dict = dict(title=title, overlaying='y', side='right', showgrid=False,
-                        position=pos, anchor='free', **farb_dict)
+        ax: dict = dict(title=dict(text=title, standoff=10),
+                        overlaying='y', side='right', showgrid=False,
+                        position=pos, anchor='free',
+                        ticklabelstandoff=8,
+                        **farb_dict)
         if rng:
             ax['range'] = rng
         layout_yachsen[yk] = ax
@@ -613,6 +618,9 @@ def build_chart_png(
     show_integral: bool = False,
     show_integral_curve: bool = False,
     multi_diag_data: dict | None = None,
+    show_y_slider: bool = False,
+    y_slider_a: float = 0.0,
+    y_slider_b: float = 0.0,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -686,7 +694,9 @@ def build_chart_png(
         xaxis_title=f"Zeit ({zeit_einheit})",
         height=500,
         hovermode="x unified",
-        legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
+        legend=dict(orientation="h", y=1.0, yanchor="bottom", xanchor="right", x=1,
+                    bgcolor="rgba(255,255,255,0.7)"),
+        margin=dict(l=100, r=max(10, int((1.0 - x_domain_end) * 1600) + 10), t=10, b=40),
         xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                    showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
         plot_bgcolor='white',
@@ -709,6 +719,14 @@ def build_chart_png(
         ))
         _zeichne_integral_flaeche(export_fig, _px_all, _y_cum, yaxis=multi_diag_yaxis)
 
+    if show_y_slider:
+        export_fig.add_hline(y=y_slider_a, line_dash="dash", line_color=FARBE_CURSOR,
+                             annotation_text=f"YA {y_slider_a:.2f}",
+                             annotation_position="top left")
+        export_fig.add_hline(y=y_slider_b, line_dash="dash", line_color="darkorange",
+                             annotation_text=f"YB {y_slider_b:.2f}",
+                             annotation_position="top left")
+
     return export_fig.to_image(format="png", width=1600, height=500, scale=2)
 
 
@@ -718,80 +736,117 @@ def build_chart_png(
 
 def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
     """Erstellt ein A4-Querformat-PDF mit Diagramm und Kenngrößen-Tabelle."""
-    buf      = io.BytesIO()
-    page     = landscape(A4)       # 297 × 210 mm
-    usable_w = page[0] - 30 * mm  # 267 mm (je 15 mm Rand)
+    buf       = io.BytesIO()
+    page      = landscape(A4)          # 297 × 210 mm
+    margin    = 15 * mm
+    usable_w  = (page[0] - 2 * margin) * 0.90   # 267 mm × 90 %
+    usable_h  = (page[1] - 2 * margin) * 0.90   # 180 mm × 90 %
+
+    # --- feste Höhen der Elemente (empirisch gemessen via afterFlowable-Tracking) ---
+    # ReportLab SimpleDocTemplate hat ~2.12 mm internen Overhead (LCActionFlowable = 6 pt).
+    # Paragraph mit leading=9pt belegt exakt 9 pt = 3.175 mm (nicht 4 mm!).
+    # Deshalb: frame_available = usable_h - 2.117mm (interner RL-Overhead)
+    _RL_OVERHEAD = 2.117 * mm   # ReportLab-interner LCActionFlowable-Abstand
+    HDR_H     = 6    * mm       # Kopfzeile (Table, rowHeight fix gesetzt)
+    LBL_ROW_H = 4.5  * mm       # Tabelle: Label-Zeile
+    VAL_ROW_H = 6    * mm       # Tabelle: Wert-Zeile
+    TBL_H     = LBL_ROW_H + VAL_ROW_H   # 10.5 mm pro Tabellenblock
+    GAP       = 1.5  * mm       # Abstand Diagramm → Tabelle
+
+    # --- Metriken: 7 Spalten pro Zeile, max. 3 Zeilen ---
+    COLS_PER_ROW = 7
+    MAX_ROWS     = 3
+    items = list(metrics.items())
+    # Auf max. 3×7 = 21 Items begrenzen
+    items = items[:COLS_PER_ROW * MAX_ROWS]
+    n     = len(items)
+    # In Gruppen à COLS_PER_ROW aufteilen, letzte Gruppe mit Leerfeldern auffüllen
+    gruppen = []
+    for _i in range(0, n, COLS_PER_ROW):
+        chunk = list(items[_i:_i + COLS_PER_ROW])
+        while len(chunk) < COLS_PER_ROW:
+            chunk.append(("", ""))
+        gruppen.append(chunk)
+
+    n_gruppen  = len(gruppen)
+    tabellen_h = n_gruppen * TBL_H + (n_gruppen - 1) * GAP
+
+    # Nutzbarer Frame nach Header:
+    # frame_start = usable_h - _RL_OVERHEAD
+    # nach HDR: frame_start - HDR_H  ← hier beginnt das Bild
+    frame_after_par = usable_h - _RL_OVERHEAD - HDR_H
+    # Bild endet bei: frame_after_par - chart_h
+    # danach: GAP + tabellen_h, muss noch >= 0 sein (bottomMargin schon in usable_h)
+    chart_h = max(55 * mm, frame_after_par - GAP - tabellen_h)
+
     doc = SimpleDocTemplate(
         buf, pagesize=page,
-        leftMargin=15*mm, rightMargin=15*mm,
-        topMargin=12*mm, bottomMargin=12*mm,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=margin,  bottomMargin=margin,
     )
+
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'ExportTitle', parent=styles['Normal'],
         fontSize=13, textColor=colors.HexColor('#003366'),
-        fontName='Helvetica-Bold', spaceAfter=4,
-    )
-    sub_style = ParagraphStyle(
-        'ExportSub', parent=styles['Normal'],
-        fontSize=8, textColor=colors.HexColor('#666666'), spaceAfter=6,
+        fontName='Helvetica-Bold', leading=15,
     )
     ts_style = ParagraphStyle(
         'ExportTS', parent=styles['Normal'],
         fontSize=8, textColor=colors.HexColor('#666666'),
-        fontName='Helvetica', alignment=2,  # 2 = RIGHT
+        fontName='Helvetica', alignment=2, leading=10,
     )
+
     dt_now = datetime.datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
     header_tbl = Table(
-        [[Paragraph("Messdaten-Auswertung", title_style), Paragraph(dt_now, ts_style)]],
-        colWidths=[usable_w * 0.7, usable_w * 0.3],
-        rowHeights=[8*mm],
+        [[Paragraph(f"Messdaten-Auswertung – {filename}", title_style),
+          Paragraph(dt_now, ts_style)]],
+        colWidths=[usable_w * 0.75, usable_w * 0.25],
+        rowHeights=[HDR_H],
     )
     header_tbl.setStyle(TableStyle([
-        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 0),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 0),
+        ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING',  (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING',   (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING',(0, 0), (-1, -1), 0),
     ]))
 
-    story = [
-        header_tbl,
-        Paragraph(f"Datei: {filename}", sub_style),
-        Image(io.BytesIO(chart_png), width=usable_w, height=usable_w * 0.38),  # ~16:6 Ratio
-        Spacer(1, 4*mm),
-    ]
-
-    items               = list(metrics.items())
-    halb                = (len(items) + 1) // 2
-    kenngroessen_oben   = items[:halb]
-    kenngroessen_unten  = items[halb:]
-    while len(kenngroessen_unten) < halb:
-        kenngroessen_unten.append(("", ""))
-
-    col_widths = [usable_w / halb] * halb
-
     def _make_kenngroessen_tabelle(zeilen_items):
-        """Baut eine zweizeilige Kenngrößen-Tabelle (Label oben, Wert unten)."""
-        labels = [k for k, _ in zeilen_items]
-        values = [v for _, v in zeilen_items]
-        tbl = Table([labels, values], colWidths=col_widths, rowHeights=[7*mm, 8*mm])
+        cw  = [usable_w / COLS_PER_ROW] * COLS_PER_ROW
+        lbl = [k_ for k_, _ in zeilen_items]
+        val = [v  for _,  v in zeilen_items]
+        tbl = Table([lbl, val], colWidths=cw,
+                    rowHeights=[LBL_ROW_H, VAL_ROW_H])
         tbl.setStyle(TableStyle([
-            ('BACKGROUND',  (0, 0), (-1, 0), colors.HexColor('#003366')),
-            ('TEXTCOLOR',   (0, 0), (-1, 0), colors.white),
-            ('FONTNAME',    (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE',    (0, 0), (-1, 0), 8),
-            ('ALIGN',       (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN',      (0, 0), (-1, -1), 'MIDDLE'),
-            ('BACKGROUND',  (0, 1), (-1, 1), colors.HexColor('#f0f4f8')),
-            ('FONTNAME',    (0, 1), (-1, 1), 'Helvetica-Bold'),
-            ('FONTSIZE',    (0, 1), (-1, 1), 9),
-            ('TEXTCOLOR',   (0, 1), (-1, 1), colors.HexColor('#003366')),
-            ('GRID',        (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
+            ('BACKGROUND',   (0, 0), (-1, 0), colors.HexColor('#003366')),
+            ('TEXTCOLOR',    (0, 0), (-1, 0), colors.white),
+            ('FONTNAME',     (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE',     (0, 0), (-1, 0), 10),
+            ('ALIGN',        (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
+            ('BACKGROUND',   (0, 1), (-1, 1), colors.HexColor('#f0f4f8')),
+            ('FONTNAME',     (0, 1), (-1, 1), 'Helvetica-Bold'),
+            ('FONTSIZE',     (0, 1), (-1, 1), 10),
+            ('TEXTCOLOR',    (0, 1), (-1, 1), colors.HexColor('#003366')),
+            ('GRID',         (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
+            ('TOPPADDING',   (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING',(0, 0), (-1, -1), 0),
+            ('LEFTPADDING',  (0, 0), (-1, -1), 1),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 1),
         ]))
         return tbl
 
-    story.append(_make_kenngroessen_tabelle(kenngroessen_oben))
-    story.append(Spacer(1, 2*mm))
-    story.append(_make_kenngroessen_tabelle(kenngroessen_unten))
+    story = [
+        header_tbl,
+        Image(io.BytesIO(chart_png), width=usable_w, height=chart_h),
+        Spacer(1, GAP),
+    ]
+    for i, gruppe in enumerate(gruppen):
+        story.append(_make_kenngroessen_tabelle(gruppe))
+        if i < n_gruppen - 1:
+            story.append(Spacer(1, GAP))
+
     doc.build(story)
     buf.seek(0)
     return buf.read()

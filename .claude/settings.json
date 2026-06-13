@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('/workspaces/Laser_Messung/chart.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python3 -c \"import plotly; print\\(plotly.__version__\\)\")"
+    ]
+  }
+}
