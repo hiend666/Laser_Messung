@@ -136,7 +136,8 @@ defaults = {
     'show_multi_diag': False,
     'multi_diag_ymin': 0,   # 0 = Autoscale
     'multi_diag_ymax': 0,   # 0 = Autoscale
-    'off_fein_stufe': '×1',
+    'off_fein_stufe': '1',
+    'off_kanal_sel': '',
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
     'show_widerstand_integral': False,
@@ -378,8 +379,8 @@ def _on_fein_toggle():
         if f'off{_i}' in st.session_state:
             st.session_state[f'off{_i}_slider'] = st.session_state[f'off{_i}']
 
-_FEIN_STUFEN = ['×1', '÷10', '÷100']
-_FEIN_FAKTOR = {'×1': 1, '÷10': 10, '÷100': 100}
+_FEIN_STUFEN  = ['100', '10', '1', '0,1', '0,01']
+_FEIN_SCHRITT = {'100': 100.0, '10': 10.0, '1': 1.0, '0,1': 0.1, '0,01': 0.01}
 
 
 _CURSOR_STEP = 0.001   # Slider-Schrittweite für XA/XB – alle Cursor-Werte müssen Vielfache davon sein
@@ -689,41 +690,48 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         _osc_einheiten: list[str] = []
         if file_type == "Oszilloskop CSV" and uploaded_file:
             _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
-        for _ki in range(_n_show):
+        for _ki in range(N_KANÄLE):
             _i         = _ki + 1
             _ch_key    = f'ch{_i}_name'
             _einh_key  = f'ch{_i}_einheit'
             _skale_key = f'osc_skale_{_i}'
+            _in_datei  = _i <= _n_show          # Kanal ist in aktueller Datei vorhanden
             _osc_hint  = f" [{_osc_einheiten[_ki]}]" if _ki < len(_osc_einheiten) else ""
             _cur_einh  = st.session_state.get(_einh_key, 'µm')
             _einh_opts = EINHEIT_OPTIONEN if _cur_einh in EINHEIT_OPTIONEN else [_cur_einh] + EINHEIT_OPTIONEN
+            _ch_label  = f"Kanal {_i}{_osc_hint}" + ("" if _in_datei else " *(nicht in Datei)*")
             _col_name, _col_skale, _col_einh = st.columns([2, 1, 1])
             _col_name.text_input(
-                f"Kanal {_i}{_osc_hint}", key=_ch_key,
+                _ch_label, key=_ch_key,
                 max_chars=12,
-                help="Leer lassen um diesen Kanal nicht einzulesen.",
+                disabled=not _in_datei,
+                help="Leer lassen um diesen Kanal nicht einzulesen." if _in_datei
+                     else "Dieser Kanal ist in der aktuellen Datei nicht vorhanden. Name bleibt für nächste Datei erhalten.",
             )
             if file_type == "Oszilloskop CSV":
                 _col_skale.number_input(
                     "×",
                     step=0.01, format="%.2f", key=_skale_key,
+                    disabled=not _in_datei,
                     help="Skalierungsfaktor (Rohwert × Faktor).",
                 )
             _col_einh.selectbox(
                 "Einheit", _einh_opts, key=_einh_key,
+                disabled=not _in_datei,
                 help="Physikalische Einheit – bestimmt die Y-Achse.",
             )
-            _sg_en_key  = f'ch{_i}_sg_en'
-            _sg_win_key = f'ch{_i}_sg_win'
-            _sg_en = st.toggle(
-                "SG-Vorfilter", key=_sg_en_key,
-                help="Savitzky-Golay-Glättung vor allen Berechnungen (Polygrad 3). Reduziert Digitalisierungsrauschen.",
-            )
-            if _sg_en:
-                st.slider(
-                    "Fenster", 3, 99, step=2, key=_sg_win_key,
-                    help="Fenstergröße des SG-Vorfilters (ungerade, 3–99). Größer = stärker geglättet.",
+            if _in_datei:
+                _sg_en_key  = f'ch{_i}_sg_en'
+                _sg_win_key = f'ch{_i}_sg_win'
+                _sg_en = st.toggle(
+                    "SG-Vorfilter", key=_sg_en_key,
+                    help="Savitzky-Golay-Glättung vor allen Berechnungen (Polygrad 3). Reduziert Digitalisierungsrauschen.",
                 )
+                if _sg_en:
+                    st.slider(
+                        "Fenster", 3, 99, step=2, key=_sg_win_key,
+                        help="Fenstergröße des SG-Vorfilters (ungerade, 3–99). Größer = stärker geglättet.",
+                    )
 
     if uploaded_file:
         _kanal_cfg = [st.session_state.get(f'ch{i}_name', '').strip() for i in range(1, N_KANÄLE + 1)]
@@ -758,17 +766,10 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 total_time_ms = float(df_raw['Zeit (ms)'].iloc[-1])
             else:
                 total_time_ms = len(df_raw) / sample_rate * _hz_f_init
-            for i, name in enumerate(sensor_namen, 1):
-                off_init = float(df_raw[name].min()) * -1.0
-                st.session_state[f'off{i}']        = off_init
-                st.session_state[f'off{i}_slider'] = off_init
-            for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
+            for i in range(1, N_KANÄLE + 1):
                 st.session_state[f'off{i}']        = 0.0
                 st.session_state[f'off{i}_slider'] = 0.0
-            _n_d = st.session_state.get('n_kanäle_datei', N_KANÄLE)
-            for _i in range(_n_d + 1, N_KANÄLE + 1):
-                st.session_state[f'ch{_i}_name'] = ''
-            for _i in range(1, _n_show + 1):
+            for _i in range(1, N_KANÄLE + 1):
                 st.session_state[f'show_ch{_i}'] = True
             _setze_cursor_position(total_time_ms)
             st.session_state.crop_start     = None
@@ -786,20 +787,60 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets", on_change=_SUB_EXPANDER_CBS['sub_offsets']):
         if uploaded_file and df_raw is not None and sensor_namen:
-            with st.container(border=True):
-                st.subheader("Auf 0 setzen")
-                n_ch     = len(sensor_namen)
-                btn_cols = st.columns(n_ch)
-                for i, name in enumerate(sensor_namen):
-                    if btn_cols[i].button(f"{name}", use_container_width=True,
-                                          help="Setzt den Y-Offset so, dass der Minimalwert des Kanals auf 0 liegt.", key=f"auto0_{i}"):
-                        val = float(df_raw[name].min()) * -1.0
-                        st.session_state[f'off{i+1}']        = val
-                        st.session_state[f'off{i+1}_slider'] = val
-                        st.rerun()
+            # Kanalauswahl als Radio-Buttons
+            if st.session_state.get('off_kanal_sel', '') not in sensor_namen:
+                st.session_state['off_kanal_sel'] = sensor_namen[0]
+            _off_kanal = st.radio(
+                "Kanal", sensor_namen,
+                horizontal=True,
+                key='off_kanal_sel',
+                label_visibility="collapsed",
+            )
+            _off_ki = sensor_namen.index(_off_kanal)   # 0-basiert
+            _off_kn = _off_ki + 1                       # 1-basiert (Key-Nummer)
 
-            if st.button("↺ Reset (alle auf 0)", key="reset_offsets",
-                         help="Setzt alle Y-Offsets auf 0.", use_container_width=True):
+            # Zeitachse für df_raw aufbauen (Vibrometer hat keine 'Zeit (ms)'-Spalte)
+            _xa_off   = float(st.session_state.get('xa', 0.0))
+            _xb_off   = float(st.session_state.get('xb', float('inf')))
+            _hz_f_off = float(st.session_state.get('zeit_hz_faktor', 1000.0))
+            if 'Zeit (ms)' in df_raw.columns:
+                _t_arr_off = df_raw['Zeit (ms)'].values
+            elif sample_rate > 0:
+                _t_arr_off = np.arange(len(df_raw)) * (_hz_f_off / sample_rate)
+            else:
+                _t_arr_off = None
+
+            # Rohsignal des gewählten Kanals im A-B-Bereich
+            _sig_raw = df_raw[_off_kanal].values
+            if _t_arr_off is not None and _xa_off != _xb_off:
+                _t_lo    = min(_xa_off, _xb_off)
+                _t_hi    = max(_xa_off, _xb_off)
+                _mask_ab = (_t_arr_off >= _t_lo) & (_t_arr_off <= _t_hi)
+                _sig_ab  = _sig_raw[_mask_ab] if _mask_ab.any() else _sig_raw
+            else:
+                _sig_ab  = _sig_raw
+
+            _ob1, _ob2, _ob3, _ob4 = st.columns(4)
+            if _ob1.button("Max.", key="off_btn_max", use_container_width=True,
+                           help="Y-Offset: Maximalwert im A-B-Bereich → 0"):
+                _v = -float(np.max(_sig_ab))
+                st.session_state[f'off{_off_kn}']        = _v
+                st.session_state[f'off{_off_kn}_slider'] = _v
+                st.rerun()
+            if _ob2.button("Avg.", key="off_btn_avg", use_container_width=True,
+                           help="Y-Offset: Mittelwert im A-B-Bereich → 0"):
+                _v = -float(np.mean(_sig_ab))
+                st.session_state[f'off{_off_kn}']        = _v
+                st.session_state[f'off{_off_kn}_slider'] = _v
+                st.rerun()
+            if _ob3.button("Min.", key="off_btn_min", use_container_width=True,
+                           help="Y-Offset: Minimalwert im A-B-Bereich → 0"):
+                _v = -float(np.min(_sig_ab))
+                st.session_state[f'off{_off_kn}']        = _v
+                st.session_state[f'off{_off_kn}_slider'] = _v
+                st.rerun()
+            if _ob4.button("↺", key="reset_offsets", use_container_width=True,
+                           help="Setzt alle Y-Offsets auf 0."):
                 for _ri in range(1, N_KANÄLE + 1):
                     st.session_state[f'off{_ri}']        = 0.0
                     st.session_state[f'off{_ri}_slider'] = 0.0
@@ -808,28 +849,31 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.segmented_control(
                 "Schrittweite", _FEIN_STUFEN, key="off_fein_stufe",
                 on_change=_on_fein_toggle,
-                help="Schrittweite der Y-Offset-Slider: ×1 = Standard, ÷10 = fein, ÷100 = sehr fein.",
+                help="Schrittweite des Y-Offsets in Kanaleinheiten (z.B. µm, mm/s …).",
             )
-            _fein_faktor = _FEIN_FAKTOR.get(st.session_state.get('off_fein_stufe', '×1'), 1)
-            for i, name in enumerate(sensor_namen):
-                _raw_col  = df_raw[name]
-                _off_lim  = max(Y_OFFSET_LIMIT_MIN,
-                                abs(float(_raw_col.min())) * Y_OFFSET_LIMIT_FAKTOR,
-                                abs(float(_raw_col.max())) * Y_OFFSET_LIMIT_FAKTOR)
-                _off_lim  = float(np.ceil(_off_lim / 100) * 100)
-                _off_step = (0.1   if _off_lim <= SLIDER_STEP_SCHWELLEN[0] else
-                             1.0   if _off_lim <= SLIDER_STEP_SCHWELLEN[1] else
-                             10.0  if _off_lim <= SLIDER_STEP_SCHWELLEN[2] else 100.0)
-                _off_step /= _fein_faktor
-                _off_fmt  = ("%.3f" if _off_step < 0.01
-                             else "%.2f" if _off_step < 0.1
-                             else "%.1f" if _off_step < 1.0
-                             else "%.0f")
-                st.slider(
-                    name, -_off_lim, _off_lim, step=_off_step, format=_off_fmt,
-                    key=f'off{i+1}_slider', on_change=OFF_CALLBACKS[i],
-                    help=f"Y-Versatz für diesen Kanal (Bereich ±{_off_lim:.0f}, Schritt {_off_step:.4g}).",
-                )
+            # Schrittweite direkt aus Auswahl (nicht abhängig vom Kanalbereich)
+            _off_step = _FEIN_SCHRITT.get(st.session_state.get('off_fein_stufe', '1'), 1.0)
+
+            # Grenzen aus Kanalbereich
+            _raw_col  = df_raw[_off_kanal]
+            _off_lim  = max(Y_OFFSET_LIMIT_MIN,
+                            abs(float(_raw_col.min())) * Y_OFFSET_LIMIT_FAKTOR,
+                            abs(float(_raw_col.max())) * Y_OFFSET_LIMIT_FAKTOR)
+            _off_lim  = float(np.ceil(_off_lim / 100) * 100)
+            _off_fmt  = "%.2f"
+            # Freien Key klemmen und immer in Widget-Key schreiben (vor Render)
+            _off_cur = float(np.clip(
+                float(st.session_state.get(f'off{_off_kn}', 0.0)),
+                -_off_lim, _off_lim,
+            ))
+            st.session_state[f'off{_off_kn}_slider'] = _off_cur
+            st.number_input(
+                _off_kanal,
+                min_value=-_off_lim, max_value=_off_lim,
+                step=_off_step, format=_off_fmt,
+                key=f'off{_off_kn}_slider', on_change=OFF_CALLBACKS[_off_ki],
+                label_visibility="collapsed",
+            )
 
     with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset", on_change=_SUB_EXPANDER_CBS['sub_xoffset']):
         if uploaded_file and sensor_namen:
@@ -1068,6 +1112,9 @@ st.session_state.xa    = xa
 st.session_state.xa_sw = xa
 st.session_state.xb    = xb
 st.session_state.xb_sw = xb
+# Berechnungen nutzen immer den sortierten Bereich – Slider-Reihenfolge egal
+if xa > xb:
+    xa, xb = xb, xa
 
 with st.sidebar.expander("Diagrammarker", expanded=False):
     st.caption("Peak-Marker", help="Sichtbarkeit der Peak-Marker im Diagramm.")
