@@ -139,7 +139,8 @@ defaults = {
     'show_multi_diag': False,
     'multi_diag_ymin': 0,   # 0 = Autoscale
     'multi_diag_ymax': 0,   # 0 = Autoscale
-    'off_fein_stufe': '1',
+    'off_fein_stufe':   '1',
+    'x_off_fein_stufe': '0,1',
     'off_kanal_sel': '',
     'show_multi_kanal': False,
     'multi_kanal_auswahl': [],
@@ -195,7 +196,7 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_sop', 'sop_percent',
     'show_integral', 'show_integral_curve', 'int_axis_min', 'int_axis_max',
     'show_multi_diag', 'multi_diag_ymin', 'multi_diag_ymax',
-    'off_fein_stufe',
+    'off_fein_stufe', 'x_off_fein_stufe',
     'show_multi_kanal', 'multi_kanal_auswahl',
     'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
@@ -897,10 +898,15 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     with st.expander("X-Offset", expanded=st.session_state.sub_xoffset, key="sub_xoffset", on_change=_SUB_EXPANDER_CBS['sub_xoffset']):
         if uploaded_file and sensor_namen:
+            st.segmented_control(
+                "Schrittweite", _FEIN_STUFEN, key="x_off_fein_stufe",
+                help=f"Schrittweite des X-Offsets in {_zeit_einheit}.",
+            )
+            _x_off_step = _FEIN_SCHRITT.get(st.session_state.get('x_off_fein_stufe', '0,1'), 0.1)
             for _xi, _xname in enumerate(sensor_namen):
                 st.number_input(
                     f"X-Offset {_xname} ({_zeit_einheit})",
-                    step=0.1, format="%.3f",
+                    step=_x_off_step, format="%.3f",
                     key=f'x_off{_xi+1}',
                     help=f"Zeitversatz in {_zeit_einheit} – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
