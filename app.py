@@ -758,8 +758,13 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         _kanal_cfg = [st.session_state.get(f'ch{i}_name', '').strip() for i in range(1, N_KANÄLE + 1)]
         # Nur die ersten _n_show Kanäle verwenden – verhindert, dass alte Namen aus
         # früheren Dateien mit mehr Kanälen mitgeschleppt werden.
-        kanal_namen_tuple = tuple(n for n in _kanal_cfg[:_n_show] if n)
-        _sensor_ch_num    = {name: i + 1 for i, name in enumerate(_kanal_cfg[:_n_show]) if name}
+        # Duplikate entfernen (erster Treffer gewinnt) – verhindert StreamlitDuplicateElementKey
+        # wenn zwei Kanäle versehentlich denselben Namen tragen.
+        _sensor_ch_num: dict[str, int] = {}
+        for _i, _n in enumerate(_kanal_cfg[:_n_show]):
+            if _n and _n not in _sensor_ch_num:
+                _sensor_ch_num[_n] = _i + 1
+        kanal_namen_tuple = tuple(_sensor_ch_num.keys())
 
         if len(kanal_namen_tuple) < 1:
             st.sidebar.error("Mindestens ein Kanalname muss angegeben werden.")
