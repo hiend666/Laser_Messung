@@ -621,6 +621,8 @@ def build_chart_png(
     show_y_slider: bool = False,
     y_slider_a: float = 0.0,
     y_slider_b: float = 0.0,
+    kanal_bereiche: dict | None = None,
+    y_ranges_fallback: dict | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -649,7 +651,10 @@ def build_chart_png(
     _alle = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
     _kanal_farbe_map = {name: KANAL_FARBEN[_alle.index(name) if name in _alle else 0]
                         for name in sensor_namen}
-    _kanal_bereiche: dict[str, tuple[float, float]] = {
+    # Spans aus dem gecropten df nur als Fallback – bevorzugt die vom Aufrufer übergebenen
+    # Spans aus dem vollen df_use, damit der SPLIT_FAKTOR-Vergleich identisch zum
+    # interaktiven Diagramm ausfällt.
+    _kanal_bereiche: dict[str, tuple[float, float]] = kanal_bereiche or {
         n: (float(df[n].min()), float(df[n].max())) for n in sensor_namen if n in df.columns
     }
     _int_einheit_png = f'{_aktiv_einheit}·{zeit_einheit}'
@@ -661,6 +666,7 @@ def build_chart_png(
         show_acceleration, acceleration is not None,
         v_einheit=v_einheit, a_einheit=a_einheit,
         kanal_farbe_map=_kanal_farbe_map,
+        y_ranges_fallback=y_ranges_fallback,
         kanal_bereiche=_kanal_bereiche,
         kanal_ch_num=kanal_ch_num,
         show_integral_curve=show_integral_curve,

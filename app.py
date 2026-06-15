@@ -1878,6 +1878,8 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     show_y_slider=show_y_slider,
                     y_slider_a=float(st.session_state.get('ya_sw', 0.0)),
                     y_slider_b=float(st.session_state.get('yb_sw', 0.0)),
+                    kanal_bereiche=_kanal_bereiche,
+                    y_ranges_fallback=_yrange_fallback,
                 )
                 if export_format == "PDF":
                     file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
