@@ -469,7 +469,8 @@ def detect_kanal_count(file_bytes: bytes, file_type: str, skip_rows: int = 0) ->
             return 1
 
         # CSV plain
-        probe      = pd.read_csv(io.BytesIO(file_bytes), sep=',', decimal='.', header=None,
+        sep, dec = _sniff_csv_params(file_bytes, skip_rows)
+        probe      = pd.read_csv(io.BytesIO(file_bytes), sep=sep, decimal=dec, header=None,
                                  skiprows=skip_rows, nrows=3)
         probe      = probe.dropna(axis=1, how='all')
         first_cell = str(probe.iloc[0, 0]).strip()
