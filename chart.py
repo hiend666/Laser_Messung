@@ -85,6 +85,7 @@ def _yachsen_layout(
     int_einheit: str = '',
     show_multi_diag: bool = False,
     multi_diag_einheit: str = '',
+    nulllinie_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[dict, dict, str, str, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
@@ -104,6 +105,9 @@ def _yachsen_layout(
     _ch_num = kanal_ch_num or {}
 
     def _user_lim_kanal(name: str) -> tuple[float, float] | None:
+        # Gleiche-Nulllinie-Override hat Vorrang vor manuellen Grenzen
+        if nulllinie_ranges and name in nulllinie_ranges:
+            return nulllinie_ranges[name]
         ch_i = _ch_num.get(name, 0)
         if ch_i == 0:
             return None
@@ -623,6 +627,8 @@ def build_chart_png(
     y_slider_b: float = 0.0,
     kanal_bereiche: dict | None = None,
     y_ranges_fallback: dict | None = None,
+    metrics: dict | None = None,
+    nulllinie_ranges: dict | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -673,6 +679,7 @@ def build_chart_png(
         int_einheit=_int_einheit_png,
         show_multi_diag=bool(_md),
         multi_diag_einheit=_md_eu,
+        nulllinie_ranges=nulllinie_ranges,
     )
     active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -702,7 +709,7 @@ def build_chart_png(
         hovermode="x unified",
         legend=dict(orientation="h", y=1.0, yanchor="bottom", xanchor="right", x=1,
                     bgcolor="rgba(255,255,255,0.7)"),
-        margin=dict(l=100, r=max(10, int((1.0 - x_domain_end) * 1600) + 10), t=10, b=40),
+        margin=dict(l=100, r=50 if x_domain_end < 1.0 else 10, t=10, b=40),
         xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                    showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
         plot_bgcolor='white',
@@ -733,7 +740,50 @@ def build_chart_png(
                              annotation_text=f"YB {y_slider_b:.2f}",
                              annotation_position="top left")
 
-    return export_fig.to_image(format="png", width=1600, height=500, scale=2)
+    # Messwert-Tabelle als Annotation-Reihen unterhalb des Diagramms
+    _png_metrics = metrics or {}
+    if _png_metrics:
+        COLS      = 7
+        ROW_H     = 44    # px pro Label+Wert-Zeile
+        GAP_XAXIS = 148   # px Abstand zwischen X-Achsenbeschriftung und Tabelle (≈4 Zeilenhöhen)
+        _items    = list(_png_metrics.items())
+        _chunks   = [_items[i:i + COLS] for i in range(0, len(_items), COLS)]
+        _tbl_h    = len(_chunks) * ROW_H
+        _margin_b = GAP_XAXIS + _tbl_h    # gesamter unterer Rand: Lücke + Tabelle
+        _png_h    = 500 + _margin_b - 40  # 40 = bisheriges margin.b ohne Tabelle
+        # y-Koordinaten in Paper-Einheiten (0=Plotbereich-Unterkante, negativ=darunter)
+        _unit = 1.0 / _png_h              # 1px in Paper-Koordinaten
+        for _ri, _chunk in enumerate(_chunks):
+            _y_lbl = -(_unit * (GAP_XAXIS + _ri * ROW_H + 1))
+            _y_val = -(_unit * (GAP_XAXIS + _ri * ROW_H + ROW_H * 0.5 + 1))
+            for _ci, (_lbl, _val) in enumerate(_chunk):
+                _x = (_ci + 0.5) / COLS
+                export_fig.add_annotation(
+                    x=_x, y=_y_lbl, xref='paper', yref='paper',
+                    text=f"<b>{_lbl}</b>",
+                    showarrow=False, font=dict(size=10, color='white'),
+                    bgcolor='#003366', bordercolor='#cccccc', borderwidth=0.5,
+                    xanchor='center', yanchor='top',
+                    width=1600 / COLS - 4,
+                )
+                export_fig.add_annotation(
+                    x=_x, y=_y_val, xref='paper', yref='paper',
+                    text=f"<b>{_val}</b>",
+                    showarrow=False, font=dict(size=11, color='#003366'),
+                    bgcolor='#f0f4f8', bordercolor='#cccccc', borderwidth=0.5,
+                    xanchor='center', yanchor='top',
+                    width=1600 / COLS - 4,
+                )
+        export_fig.update_layout(margin=dict(
+            l=export_fig.layout.margin.l or 100,
+            r=export_fig.layout.margin.r or 10,
+            t=export_fig.layout.margin.t or 10,
+            b=_margin_b,
+        ))
+    else:
+        _png_h = 500
+
+    return export_fig.to_image(format="png", width=1600, height=_png_h, scale=2)
 
 
 # ---------------------------------------------------------------------------

@@ -161,6 +161,10 @@ defaults = {
     'sub_grenzwerte': False,
     'sub_speichern':  False,
     'einstellungen':  True,
+    'gleiche_nulllinie':    False,
+    'export_format':        'PDF',
+    'export_mit_werten':    False,
+    'export_wert_auswahl':  [],
 }
 for _i in range(1, N_KANÄLE + 1):
     defaults[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
@@ -200,6 +204,8 @@ EINSTELLUNGEN_KEYS: list[str] = [
     'show_multi_kanal', 'multi_kanal_auswahl',
     'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
     'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
+    'gleiche_nulllinie',
+    'export_format', 'export_mit_werten', 'export_wert_auswahl',
 ]
 for _i in range(1, N_KANÄLE + 1):
     EINSTELLUNGEN_KEYS += [
@@ -917,6 +923,8 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 )
 
     with st.expander("Diagramm-Grenzwerte", expanded=st.session_state.sub_grenzwerte, key="sub_grenzwerte", on_change=_SUB_EXPANDER_CBS['sub_grenzwerte']):
+        st.toggle("Gleiche Nulllinie", key="gleiche_nulllinie",
+                  help="Alle Kanäle auf Automatik werden so skaliert, dass die 0-Linie auf gleicher Höhe liegt.")
         st.caption("min / max  (0 = automatisch)")
         _grenz_hat_inhalt = False
         for _i in range(1, N_KANÄLE + 1):
@@ -1522,6 +1530,83 @@ for _n in sichtbare_sensor_namen:
     if _n in df_use.columns:
         _kanal_bereiche[_n] = (float(df_use[_n].min()), float(df_use[_n].max()))
 
+# --- Gleiche Nulllinie: interne Limits berechnen (nur Automatik-Kanäle) ---
+_nulllinie_ranges: dict[str, tuple[float, float]] = {}
+if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_namen) > 1:
+    import math as _math
+
+    def _runde_scale(v: float) -> float:
+        """Rundet v auf die nächste 1-2-5-Zahl auf (aufwärts)."""
+        if v <= 0:
+            return 1.0
+        mag = 10 ** _math.floor(_math.log10(v))
+        for fak in (1, 2, 5, 10, 20, 50, 100):
+            k = fak * mag
+            if k >= v:
+                return k
+        return v
+
+    # Nur Automatik-Kanäle (ch{i}_ymin/max == 0)
+    _auto_kanäle = []
+    for _n in sichtbare_sensor_namen:
+        _ci = _sensor_ch_num.get(_n, 0)
+        _lo = float(st.session_state.get(f'ch{_ci}_ymin', 0))
+        _hi = float(st.session_state.get(f'ch{_ci}_ymax', 0))
+        if _lo == 0 and _hi == 0 and _n in _kanal_bereiche:
+            _auto_kanäle.append(_n)
+
+    if len(_auto_kanäle) > 1:
+        # Maximales positives und negatives Verhältnis über alle Kanäle bestimmen.
+        # Kanäle die nur positiv oder nur negativ sind, bekommen ein künstliches
+        # Gegengewicht von 0 (sie liefern kein ratio zur anderen Seite).
+        _max_ratio_pos = 0.0
+        _max_ratio_neg = 0.0
+        for _n in _auto_kanäle:
+            _dlo, _dhi = _kanal_bereiche[_n]
+            _dhi_pb = _dhi * (1 + Y_PUFFER)
+            _dlo_pb = _dlo * (1 + Y_PUFFER)
+            _pos = max(_dhi_pb, 0.0)
+            _neg = max(-_dlo_pb, 0.0)
+            _span = _pos + _neg
+            if _span <= 0:
+                continue
+            _max_ratio_pos = max(_max_ratio_pos, _pos / _span)
+            _max_ratio_neg = max(_max_ratio_neg, _neg / _span)
+
+        # Normierung: Summe muss 1 ergeben
+        _ratio_sum = _max_ratio_pos + _max_ratio_neg
+        if _ratio_sum <= 0:
+            # alle Kanäle leer — nichts tun
+            pass
+        elif _max_ratio_pos == 0 or _max_ratio_neg == 0:
+            # Alle Kanäle liegen nur auf einer Seite der 0:
+            # 0 ist automatisch Grenzwert, normale Automatik reicht.
+            pass
+        else:
+            # Normieren
+            _max_ratio_pos /= _ratio_sum
+            _max_ratio_neg /= _ratio_sum
+
+            # Für jeden Kanal: minimalen "Scale" berechnen damit beide Seiten passen.
+            # scale = max(pos_needed / ratio_pos, neg_needed / ratio_neg)
+            # Dann scale auf saubere 1-2-5-Zahl aufrunden → 0-Linie bleibt exakt.
+            for _n in _auto_kanäle:
+                _dlo, _dhi = _kanal_bereiche[_n]
+                _pos_raw = max(_dhi * (1 + Y_PUFFER), 0.0)
+                _neg_raw = max(-_dlo * (1 + Y_PUFFER), 0.0)
+
+                # Kanal nur positiv: neg_raw=0 → künstlich auf ratio erweitern
+                # Kanal nur negativ: pos_raw=0 → künstlich auf ratio erweitern
+                # scale ist die Gesamtspanne der Achse (pos+neg)
+                _scale_min = max(
+                    _pos_raw / _max_ratio_pos if _max_ratio_pos > 0 else 0.0,
+                    _neg_raw / _max_ratio_neg if _max_ratio_neg > 0 else 0.0,
+                )
+                _scale = _runde_scale(_scale_min)
+                _new_hi = _scale * _max_ratio_pos
+                _new_lo = -_scale * _max_ratio_neg
+                _nulllinie_ranges[_n] = (_new_lo, _new_hi)
+
 velocity_ok     = velocity is not None
 acceleration_ok = acceleration is not None
 _kanal_farbe_map = {name: KANAL_FARBEN[sensor_namen.index(name)] for name in sichtbare_sensor_namen}
@@ -1544,6 +1629,7 @@ kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x
     int_einheit=_int_einheit,
     show_multi_diag=show_multi_diag and len(_mc_auswahl_diag) == 2,
     multi_diag_einheit=_mc_diag_eu,
+    nulllinie_ranges=_nulllinie_ranges if _nulllinie_ranges else None,
 )
 active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -1796,30 +1882,46 @@ if show_multi_diag and len(_mc_auswahl_diag) == 2:
             'ymax':   float(st.session_state.get('multi_diag_ymax', 0)),
         }
 
-export_format = st.sidebar.radio(
-    "Format:", ["PDF", "PNG", "CSV (Oszilloskop)", "CSV plain"], horizontal=True,
-    label_visibility="collapsed",
-    help="PDF/PNG: Diagramm-Export. CSV (Oszilloskop): Re-importierbar als 'Oszilloskop CSV'. CSV plain: Zeile 1 = Kanalnamen, Zeile 2 = Einheiten, re-importierbar mit 'Kanalnamen aus erster Zeile'.",
+# --- Export-Format-Auswahl ---
+st.sidebar.radio(
+    "Format", ["PDF", "PNG", "CSV (Oszi)", "CSV (plain)"], horizontal=True,
+    key="export_format", label_visibility="collapsed",
 )
+_exp_format = st.session_state.get("export_format", "PDF")
+_exp_ist_diagramm = _exp_format in ("PDF", "PNG")
+
+_exp_mit_werten = st.sidebar.toggle(
+    "Mit Werten", key="export_mit_werten",
+    help="Messwerte in PDF-Tabelle / PNG-Annotation einbetten.",
+    disabled=not _exp_ist_diagramm,
+)
+
+if _exp_mit_werten and _exp_ist_diagramm:
+    _alle_metrik_keys = list(metrics.keys())
+    _vorauswahl = [k for k in st.session_state.get('export_wert_auswahl', [])
+                   if k in _alle_metrik_keys]
+    if not _vorauswahl:
+        _vorauswahl = _alle_metrik_keys
+    st.sidebar.multiselect(
+        "Exportierte Werte", _alle_metrik_keys,
+        default=_vorauswahl,
+        key="export_wert_auswahl",
+        help="Welche Messwerte sollen exportiert werden?",
+    )
 if st.sidebar.button("📥 Export erstellen", width="stretch",
                      help="Erstellt die Exportdatei im gewählten Format – Download-Button erscheint danach."):
     with st.spinner("Wird erstellt..."):
         try:
             stem = uploaded_file.name.rsplit('.', 1)[0]
+            _ex_kanäle  = sichtbare_sensor_namen
+            _valid_mask = df[_ex_kanäle].notna().all(axis=1)
+            _df_ex      = df[_valid_mask].reset_index(drop=True)
 
-            if export_format == "CSV (Oszilloskop)":
-                # Oszilloskop-CSV-Format: Zeit in Sekunden, Kanäle mit Einheit-Header
-                # X-Offsets sind bereits in df eingebacken (np.roll); NaN-Randzeilen
-                # (entstehen durch den Roll) werden gefiltert damit der Re-Import sauber bleibt.
-                _ex_kanäle = sichtbare_sensor_namen
-                _n_ex      = len(_ex_kanäle)
-                _valid_mask = df[_ex_kanäle].notna().all(axis=1)
-                _df_ex      = df[_valid_mask].reset_index(drop=True)
-                _zeit_s     = _df_ex['Zeit (ms)'].values / _hz_faktor   # Anzeigeeinheit → Sekunden
+            if _exp_format == "CSV (Oszi)":
+                _n_ex   = len(_ex_kanäle)
+                _zeit_s = _df_ex['Zeit (ms)'].values / _hz_faktor
                 header1 = 'x-axis,' + ','.join(str(i + 1) for i in range(_n_ex))
-                header2 = 'second,' + ','.join(
-                    kanal_einheit_map.get(k, '') for k in _ex_kanäle
-                )
+                header2 = 'second,' + ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
                 _rows = [header1, header2]
                 for _ri in range(len(_df_ex)):
                     _row = f"{_zeit_s[_ri]:.10e}"
@@ -1827,36 +1929,26 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                         _row += f",{_df_ex[_k].iloc[_ri]:.8e}"
                     _rows.append(_row)
                 _csv_bytes = '\n'.join(_rows).encode('utf-8')
-                st.sidebar.download_button(
-                    label="💾 CSV herunterladen",
-                    data=_csv_bytes,
-                    file_name=f"{stem}_osc.csv",
-                    mime="text/csv",
-                    width="stretch",
-                )
+                st.sidebar.download_button("💾 CSV herunterladen", _csv_bytes,
+                    file_name=f"{stem}_osc.csv", mime="text/csv", width="stretch")
 
-            elif export_format == "CSV plain":
-                # CSV plain: Zeile 1 = Kanalnamen, Zeile 2 = Einheiten, ab Zeile 3 Daten.
-                # Re-importierbar mit 'Kanalnamen aus erster Zeile' + 'Kanal Einheit aus zweiter Zeile'
-                # und 'Kopfzeilen überspringen' = 2.
-                _ex_kanäle  = sichtbare_sensor_namen
-                _valid_mask = df[_ex_kanäle].notna().all(axis=1)
-                _df_ex      = df[_valid_mask].reset_index(drop=True)
+            elif _exp_format == "CSV (plain)":
                 header1 = ','.join(_ex_kanäle)
                 header2 = ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
                 _rows = [header1, header2]
                 for _ri in range(len(_df_ex)):
                     _rows.append(','.join(f"{_df_ex[_k].iloc[_ri]:.8e}" for _k in _ex_kanäle))
                 _csv_bytes = '\n'.join(_rows).encode('utf-8')
-                st.sidebar.download_button(
-                    label="💾 CSV herunterladen",
-                    data=_csv_bytes,
-                    file_name=f"{stem}_plain.csv",
-                    mime="text/csv",
-                    width="stretch",
-                )
+                st.sidebar.download_button("💾 CSV herunterladen", _csv_bytes,
+                    file_name=f"{stem}_plain.csv", mime="text/csv", width="stretch")
 
             else:
+                # --- Diagramm-Export (PDF / PNG) ---
+                _wert_auswahl = st.session_state.get('export_wert_auswahl', list(metrics.keys()))
+                metrics_export = (
+                    {k: v for k, v in metrics.items() if k in _wert_auswahl}
+                    if _exp_mit_werten and _wert_auswahl else {}
+                )
                 chart_png = build_chart_png(
                     df, sichtbare_sensor_namen, active_sensor,
                     xa, xb, ya, yb, show_v_avg,
@@ -1885,23 +1977,16 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     y_slider_b=float(st.session_state.get('yb_sw', 0.0)),
                     kanal_bereiche=_kanal_bereiche,
                     y_ranges_fallback=_yrange_fallback,
+                    metrics=metrics_export if _exp_format == "PNG" else {},
+                    nulllinie_ranges=_nulllinie_ranges if _nulllinie_ranges else None,
                 )
-                if export_format == "PDF":
-                    file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics)
-                    st.sidebar.download_button(
-                        label="💾 PDF herunterladen",
-                        data=file_bytes_out,
-                        file_name=f"{stem}_auswertung.pdf",
-                        mime="application/pdf",
-                        width="stretch",
-                    )
+                if _exp_format == "PDF":
+                    file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics_export)
+                    st.sidebar.download_button("💾 PDF herunterladen", file_bytes_out,
+                        file_name=f"{stem}_auswertung.pdf", mime="application/pdf", width="stretch")
                 else:
-                    st.sidebar.download_button(
-                        label="💾 PNG herunterladen",
-                        data=chart_png,
-                        file_name=f"{stem}_diagramm.png",
-                        mime="image/png",
-                        width="stretch",
-                    )
+                    st.sidebar.download_button("💾 PNG herunterladen", chart_png,
+                        file_name=f"{stem}_diagramm.png", mime="image/png", width="stretch")
+
         except Exception as exc:
             st.sidebar.error(f"Export fehlgeschlagen: {exc}")
