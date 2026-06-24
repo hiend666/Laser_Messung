@@ -811,7 +811,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.session_state.einstellungen  = False
             st.rerun()
 
-        offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
+        offs = tuple(float(st.session_state.get(f'off{i+1}', 0.0)) for i in range(len(sensor_namen)))
     else:
         df_raw = None
         sensor_namen = []
@@ -893,11 +893,12 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                             abs(float(_raw_col.max())) * Y_OFFSET_LIMIT_FAKTOR)
             _off_lim  = float(np.ceil(_off_lim / 100) * 100)
             _off_fmt  = "%.2f"
-            # Freien Key klemmen und immer in Widget-Key schreiben (vor Render)
+            # Freien Key klemmen – beide Keys konsistent halten (vor Widget-Render)
             _off_cur = float(np.clip(
                 float(st.session_state.get(f'off{_off_kn}', 0.0)),
                 -_off_lim, _off_lim,
             ))
+            st.session_state[f'off{_off_kn}']        = _off_cur
             st.session_state[f'off{_off_kn}_slider'] = _off_cur
             st.number_input(
                 _off_kanal,
@@ -1030,7 +1031,7 @@ if len(kanal_namen_tuple) < 1:
 # DATENAUFBEREITUNG
 # ---------------------------------------------------------------------------
 
-offs = tuple(st.session_state[f'off{i+1}'] for i in range(len(sensor_namen)))
+offs = tuple(float(st.session_state.get(f'off{i+1}', 0.0)) for i in range(len(sensor_namen)))
 
 _hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
 _zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
@@ -1421,7 +1422,7 @@ sop_linien: list = []
 v_sop            = float('nan')
 
 if idx_end > idx_start:
-    if sg_v_roh is not None:
+    if show_velocity and sg_v_roh is not None:
         sg_v_signed = sg_v_roh * v_faktor
 
         # D-max: höchste (positivste) Geschwindigkeit – vorzeichenkorrekt
@@ -1451,7 +1452,7 @@ if idx_end > idx_start:
             y_vmin_ende  = df.loc[iv_min_ende,  active_sensor]
             has_vmin     = True
 
-    if sg_a_roh is not None:
+    if show_acceleration and sg_a_roh is not None:
         sg_a = sg_a_roh * a_faktor
 
         def _peak_marker(idx_abs):
@@ -1801,18 +1802,20 @@ z2.metric("Frequenz Δt (A-B)", _fmt_freq(freq_hz))
 z3.metric("Δs (A-B)",          _fmt_val(dy, _aktiv_einheit))
 z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub) else "N/A")
 
-# Zeile 2 – 1. Ableitung
+# Zeile 2 – 1. Ableitung (v_max/v_min nur wenn show_velocity aktiv)
 g1, g2, g3, g4 = st.columns(4)
 g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
 g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
-g3.metric(f"d{active_sensor}/dt max",     _fmt_val(v_max, v_einheit)          if not np.isnan(v_max) else "N/A")
-g4.metric(f"d{active_sensor}/dt min",     _fmt_val(v_min, v_einheit)          if not np.isnan(v_min) else "N/A")
+if show_velocity:
+    g3.metric(f"d{active_sensor}/dt max", _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A")
+    g4.metric(f"d{active_sensor}/dt min", _fmt_val(v_min, v_einheit) if not np.isnan(v_min) else "N/A")
 
-# Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral
+# Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral (a-Werte nur wenn show_acceleration aktiv)
 _mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
 a1, a2, a3, a4 = st.columns(4)
-a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
-a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
+if show_acceleration:
+    a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
+    a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
 a3.metric(f"∫{active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
 if show_multi_kanal and len(_mc_auswahl) == 2:
     _mc_einh_a = kanal_einheit_map.get(_mc_auswahl[0], '?')
@@ -1823,7 +1826,7 @@ if show_multi_kanal and len(_mc_auswahl) == 2:
 # Zeile 4 – SOP (nur wenn aktiviert und Wert vorhanden)
 if show_sop and not np.isnan(v_sop):
     s1, *_ = st.columns(4)
-    s1.metric(f"SOP d{active_sensor}/dt", _fmt_val(v_sop, v_einheit))
+    s1.metric(f"SOP d{active_sensor}/dt ({st.session_state.get('sop_percent', 80)} %)", _fmt_val(v_sop, v_einheit))
 
 # Zeile 5 – Y-Slider Delta (nur wenn aktiviert)
 if show_y_slider:
@@ -1858,17 +1861,23 @@ metrics = {
     "Frequenz Δt (A-B)":        _fmt_freq(freq_hz),
     "Δs (A-B)":                 _fmt_val(dy, _aktiv_einheit),
     "Hub Best-fit":             _fmt_val(hub, _aktiv_einheit)              if not np.isnan(hub) else "N/A",
-    # 1. Ableitung
+    # 1. Ableitung (Cursor-basierte Werte immer vorhanden)
     f"d {active_sensor} /dt (A-B)":   _fmt_val(v_avg, v_einheit),
     f"Δd {active_sensor} /dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
-    f"d {active_sensor} /dt max":     _fmt_val(v_max, v_einheit)            if not np.isnan(v_max) else "N/A",
-    f"d {active_sensor} /dt min":    _fmt_val(v_min, v_einheit)            if not np.isnan(v_min) else "N/A",
-    # 2. Ableitung
-    f"d² {active_sensor} /dt² max Fall.": _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A",
-    f"d² {active_sensor} /dt² min Rise.": _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A",
     # Integral
     f"∫ {active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
+# SG-Peak-Werte nur wenn das jeweilige Feature aktiv ist
+if show_velocity:
+    if has_vmax:
+        metrics[f"d {active_sensor} /dt max"] = _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A"
+    if has_vmin:
+        metrics[f"d {active_sensor} /dt min"] = _fmt_val(v_min, v_einheit) if not np.isnan(v_min) else "N/A"
+if show_acceleration:
+    if has_amax_falling:
+        metrics[f"d² {active_sensor} /dt² max Fall."] = _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A"
+    if has_amax_rising:
+        metrics[f"d² {active_sensor} /dt² min Rise."] = _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A"
 # Multi-Kanal-Integral in Export aufnehmen (nur wenn Ergebnis vorhanden)
 if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 2:
     _mc_a_exp   = st.session_state['multi_kanal_auswahl'][0]
@@ -1884,7 +1893,7 @@ if show_widerstand_integral and _w_kanal and not np.isnan(widerstand_integral_va
         widerstand_integral_val, 'A', _zeit_einheit
     )
 if show_sop and not np.isnan(v_sop):
-    metrics["SOP"] = _fmt_val(v_sop, v_einheit)
+    metrics[f"SOP d{active_sensor}/dt ({st.session_state.get('sop_percent', 80)} %)"] = _fmt_val(v_sop, v_einheit)
 if show_y_slider:
     _ya_exp = float(st.session_state.get('ya_sw', 0.0))
     _yb_exp = float(st.session_state.get('yb_sw', 0.0))
