@@ -743,7 +743,7 @@ def build_chart_png(
     # Messwert-Tabelle als Annotation-Reihen unterhalb des Diagramms
     _png_metrics = metrics or {}
     if _png_metrics:
-        COLS      = 7
+        COLS      = 6
         ROW_H     = 44    # px pro Label+Wert-Zeile
         GAP_XAXIS = 148   # px Abstand zwischen X-Achsenbeschriftung und Tabelle (≈4 Zeilenhöhen)
         _items    = list(_png_metrics.items())
@@ -809,11 +809,11 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
     TBL_H     = LBL_ROW_H + VAL_ROW_H   # 10.5 mm pro Tabellenblock
     GAP       = 1.5  * mm       # Abstand Diagramm → Tabelle
 
-    # --- Metriken: 7 Spalten pro Zeile, max. 3 Zeilen ---
-    COLS_PER_ROW = 7
+    # --- Metriken: 6 Spalten pro Zeile, max. 3 Zeilen ---
+    COLS_PER_ROW = 6
     MAX_ROWS     = 3
     items = list(metrics.items())
-    # Auf max. 3×7 = 21 Items begrenzen
+    # Auf max. 3×6 = 18 Items begrenzen
     items = items[:COLS_PER_ROW * MAX_ROWS]
     n     = len(items)
     # In Gruppen à COLS_PER_ROW aufteilen, letzte Gruppe mit Leerfeldern auffüllen
