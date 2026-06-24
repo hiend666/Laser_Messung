@@ -1537,7 +1537,7 @@ if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_nam
 
     def _runde_scale(v: float) -> float:
         """Rundet v auf die nächste 1-2-5-Zahl auf (aufwärts)."""
-        if v <= 0:
+        if not _math.isfinite(v) or v <= 0:
             return 1.0
         mag = 10 ** _math.floor(_math.log10(v))
         for fak in (1, 2, 5, 10, 20, 50, 100):
@@ -1560,12 +1560,16 @@ if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_nam
     if show_velocity and sg_v_roh is not None:
         if float(st.session_state.get('v_axis_min', 0)) == 0 and float(st.session_state.get('v_axis_max', 0)) == 0:
             _v_arr = sg_v_roh * v_faktor
-            _alle_auto_bereiche['__v__'] = (float(_v_arr.min()), float(_v_arr.max()))
+            _v_lo_nl, _v_hi_nl = float(np.nanmin(_v_arr)), float(np.nanmax(_v_arr))
+            if _math.isfinite(_v_lo_nl) and _math.isfinite(_v_hi_nl):
+                _alle_auto_bereiche['__v__'] = (_v_lo_nl, _v_hi_nl)
 
     if show_acceleration and sg_a_roh is not None:
         if float(st.session_state.get('a_axis_min', 0)) == 0 and float(st.session_state.get('a_axis_max', 0)) == 0:
             _a_arr = sg_a_roh * a_faktor
-            _alle_auto_bereiche['__a__'] = (float(_a_arr.min()), float(_a_arr.max()))
+            _a_lo_nl, _a_hi_nl = float(np.nanmin(_a_arr)), float(np.nanmax(_a_arr))
+            if _math.isfinite(_a_lo_nl) and _math.isfinite(_a_hi_nl):
+                _alle_auto_bereiche['__a__'] = (_a_lo_nl, _a_hi_nl)
 
     if show_integral_curve and active_sensor in df_use.columns and len(df_use) > 1:
         if float(st.session_state.get('int_axis_min', 0)) == 0 and float(st.session_state.get('int_axis_max', 0)) == 0:
@@ -1600,7 +1604,7 @@ if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_nam
             _pos    = max(_dhi_pb, 0.0)
             _neg    = max(-_dlo_pb, 0.0)
             _span   = _pos + _neg
-            if _span <= 0:
+            if not (_span > 0):   # fängt auch NaN ab (NaN > 0 ist False)
                 continue
             _max_ratio_pos = max(_max_ratio_pos, _pos / _span)
             _max_ratio_neg = max(_max_ratio_neg, _neg / _span)
