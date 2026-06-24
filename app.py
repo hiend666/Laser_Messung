@@ -886,11 +886,14 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             # Schrittweite direkt aus Auswahl (nicht abhängig vom Kanalbereich)
             _off_step = _FEIN_SCHRITT.get(st.session_state.get('off_fein_stufe', '1'), 1.0)
 
-            # Grenzen aus Kanalbereich
-            _raw_col  = df_raw[_off_kanal]
-            _off_lim  = max(Y_OFFSET_LIMIT_MIN,
-                            abs(float(_raw_col.min())) * Y_OFFSET_LIMIT_FAKTOR,
-                            abs(float(_raw_col.max())) * Y_OFFSET_LIMIT_FAKTOR)
+            # Grenzen aus Kanalbereich (numerisch konvertieren, Textreste aus Header-Zeilen ignorieren)
+            _raw_col_num = pd.to_numeric(df_raw[_off_kanal], errors='coerce').dropna()
+            if len(_raw_col_num) > 0:
+                _off_lim = max(Y_OFFSET_LIMIT_MIN,
+                               abs(float(_raw_col_num.min())) * Y_OFFSET_LIMIT_FAKTOR,
+                               abs(float(_raw_col_num.max())) * Y_OFFSET_LIMIT_FAKTOR)
+            else:
+                _off_lim = Y_OFFSET_LIMIT_MIN
             _off_lim  = float(np.ceil(_off_lim / 100) * 100)
             _off_fmt  = "%.2f"
             # Freien Key klemmen – beide Keys konsistent halten (vor Widget-Render)
