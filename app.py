@@ -1530,7 +1530,7 @@ for _n in sichtbare_sensor_namen:
     if _n in df_use.columns:
         _kanal_bereiche[_n] = (float(df_use[_n].min()), float(df_use[_n].max()))
 
-# --- Gleiche Nulllinie: interne Limits berechnen (nur Automatik-Kanäle) ---
+# --- Gleiche Nulllinie: interne Limits berechnen (alle Automatik-Achsen) ---
 _nulllinie_ranges: dict[str, tuple[float, float]] = {}
 if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_namen) > 1:
     import math as _math
@@ -1546,66 +1546,84 @@ if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_nam
                 return k
         return v
 
-    # Nur Automatik-Kanäle (ch{i}_ymin/max == 0)
-    _auto_kanäle = []
+    # Alle Automatik-Achsen: reguläre Kanäle + Zusatzachsen (D, D², Integral, Multi-Diag)
+    # Schlüssel: Kanalname (reguläre Kanäle) oder Sonderschlüssel __v__, __a__, __int__, __md__
+    _alle_auto_bereiche: dict[str, tuple[float, float]] = {}
+
     for _n in sichtbare_sensor_namen:
         _ci = _sensor_ch_num.get(_n, 0)
         _lo = float(st.session_state.get(f'ch{_ci}_ymin', 0))
         _hi = float(st.session_state.get(f'ch{_ci}_ymax', 0))
         if _lo == 0 and _hi == 0 and _n in _kanal_bereiche:
-            _auto_kanäle.append(_n)
+            _alle_auto_bereiche[_n] = _kanal_bereiche[_n]
 
-    if len(_auto_kanäle) > 1:
-        # Maximales positives und negatives Verhältnis über alle Kanäle bestimmen.
-        # Kanäle die nur positiv oder nur negativ sind, bekommen ein künstliches
-        # Gegengewicht von 0 (sie liefern kein ratio zur anderen Seite).
+    if show_velocity and sg_v_roh is not None:
+        if float(st.session_state.get('v_axis_min', 0)) == 0 and float(st.session_state.get('v_axis_max', 0)) == 0:
+            _v_arr = sg_v_roh * v_faktor
+            _alle_auto_bereiche['__v__'] = (float(_v_arr.min()), float(_v_arr.max()))
+
+    if show_acceleration and sg_a_roh is not None:
+        if float(st.session_state.get('a_axis_min', 0)) == 0 and float(st.session_state.get('a_axis_max', 0)) == 0:
+            _a_arr = sg_a_roh * a_faktor
+            _alle_auto_bereiche['__a__'] = (float(_a_arr.min()), float(_a_arr.max()))
+
+    if show_integral_curve and active_sensor in df_use.columns and len(df_use) > 1:
+        if float(st.session_state.get('int_axis_min', 0)) == 0 and float(st.session_state.get('int_axis_max', 0)) == 0:
+            _t_nl   = df_use['Zeit (ms)'].values
+            _sig_nl = df_use[active_sensor].fillna(0).values
+            _mask_nl = (_t_nl >= min(xa, xb)) & (_t_nl <= max(xa, xb))
+            if np.any(_mask_nl):
+                _y_int_nl = np.cumsum(_sig_nl[_mask_nl]) * float(_t_nl[1] - _t_nl[0])
+                _y_int_nl -= _y_int_nl[0]
+                _alle_auto_bereiche['__int__'] = (float(_y_int_nl.min()), float(_y_int_nl.max()))
+
+    _mc_sel_nl = st.session_state.get('multi_kanal_auswahl', [])
+    if show_multi_diag and len(_mc_sel_nl) == 2:
+        if float(st.session_state.get('multi_diag_ymin', 0)) == 0 and float(st.session_state.get('multi_diag_ymax', 0)) == 0:
+            _mc_a_nl, _mc_b_nl = _mc_sel_nl
+            if _mc_a_nl in df_use.columns and _mc_b_nl in df_use.columns and len(df_use) > 1:
+                _t_nl    = df_use['Zeit (ms)'].values
+                _prod_nl = df_use[_mc_a_nl].values * df_use[_mc_b_nl].values
+                _mask_nl = (_t_nl >= min(xa, xb)) & (_t_nl <= max(xa, xb))
+                if np.any(_mask_nl):
+                    _y_md_nl  = np.cumsum(_prod_nl[_mask_nl]) * float(_t_nl[1] - _t_nl[0])
+                    _y_md_nl -= _y_md_nl[0]
+                    _alle_auto_bereiche['__md__'] = (float(_y_md_nl.min()), float(_y_md_nl.max()))
+
+    if len(_alle_auto_bereiche) > 1:
+        # Maximales positives und negatives Verhältnis über alle Achsen bestimmen.
         _max_ratio_pos = 0.0
         _max_ratio_neg = 0.0
-        for _n in _auto_kanäle:
-            _dlo, _dhi = _kanal_bereiche[_n]
+        for _dlo, _dhi in _alle_auto_bereiche.values():
             _dhi_pb = _dhi * (1 + Y_PUFFER)
             _dlo_pb = _dlo * (1 + Y_PUFFER)
-            _pos = max(_dhi_pb, 0.0)
-            _neg = max(-_dlo_pb, 0.0)
-            _span = _pos + _neg
+            _pos    = max(_dhi_pb, 0.0)
+            _neg    = max(-_dlo_pb, 0.0)
+            _span   = _pos + _neg
             if _span <= 0:
                 continue
             _max_ratio_pos = max(_max_ratio_pos, _pos / _span)
             _max_ratio_neg = max(_max_ratio_neg, _neg / _span)
 
-        # Normierung: Summe muss 1 ergeben
         _ratio_sum = _max_ratio_pos + _max_ratio_neg
         if _ratio_sum <= 0:
-            # alle Kanäle leer — nichts tun
             pass
         elif _max_ratio_pos == 0 or _max_ratio_neg == 0:
-            # Alle Kanäle liegen nur auf einer Seite der 0:
-            # 0 ist automatisch Grenzwert, normale Automatik reicht.
+            # Alle Achsen liegen nur auf einer Seite – normale Automatik reicht.
             pass
         else:
-            # Normieren
             _max_ratio_pos /= _ratio_sum
             _max_ratio_neg /= _ratio_sum
 
-            # Für jeden Kanal: minimalen "Scale" berechnen damit beide Seiten passen.
-            # scale = max(pos_needed / ratio_pos, neg_needed / ratio_neg)
-            # Dann scale auf saubere 1-2-5-Zahl aufrunden → 0-Linie bleibt exakt.
-            for _n in _auto_kanäle:
-                _dlo, _dhi = _kanal_bereiche[_n]
-                _pos_raw = max(_dhi * (1 + Y_PUFFER), 0.0)
-                _neg_raw = max(-_dlo * (1 + Y_PUFFER), 0.0)
-
-                # Kanal nur positiv: neg_raw=0 → künstlich auf ratio erweitern
-                # Kanal nur negativ: pos_raw=0 → künstlich auf ratio erweitern
-                # scale ist die Gesamtspanne der Achse (pos+neg)
+            for _n, (_dlo, _dhi) in _alle_auto_bereiche.items():
+                _pos_raw   = max(_dhi * (1 + Y_PUFFER), 0.0)
+                _neg_raw   = max(-_dlo * (1 + Y_PUFFER), 0.0)
                 _scale_min = max(
                     _pos_raw / _max_ratio_pos if _max_ratio_pos > 0 else 0.0,
                     _neg_raw / _max_ratio_neg if _max_ratio_neg > 0 else 0.0,
                 )
                 _scale = _runde_scale(_scale_min)
-                _new_hi = _scale * _max_ratio_pos
-                _new_lo = -_scale * _max_ratio_neg
-                _nulllinie_ranges[_n] = (_new_lo, _new_hi)
+                _nulllinie_ranges[_n] = (-_scale * _max_ratio_neg, _scale * _max_ratio_pos)
 
 velocity_ok     = velocity is not None
 acceleration_ok = acceleration is not None

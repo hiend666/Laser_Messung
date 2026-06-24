@@ -217,27 +217,34 @@ def _yachsen_layout(
     rechte_achsen: list[tuple[str, str, list | None, dict]] = []
     for i, (titel, kanäle) in enumerate(final_achsen[1:], 1):
         rechte_achsen.append((f'yaxis{i + 1}', titel, _rng(titel, kanäle), _achsfarbe(kanäle)))
+    def _extra_rng(ss_min_key: str, ss_max_key: str, nl_key: str) -> list | None:
+        """Gibt den Achsbereich für eine Zusatzachse zurück.
+
+        Priorität: manuelle Grenzen > Gleiche-Nulllinie-Override > None (Plotly-Autoscale).
+        """
+        lo = float(st.session_state.get(ss_min_key, 0))
+        hi = float(st.session_state.get(ss_max_key, 0))
+        if not (lo == 0 and hi == 0):
+            return [lo, hi]
+        if nulllinie_ranges and nl_key in nulllinie_ranges:
+            return list(nulllinie_ranges[nl_key])
+        return None
+
     if show_velocity and velocity_ok:
-        v_lo = float(st.session_state.get('v_axis_min', 0))
-        v_hi = float(st.session_state.get('v_axis_max', 0))
-        v_rng = [v_lo, v_hi] if not (v_lo == 0 and v_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 1}', f'D ({v_einheit})', v_rng, dict(color=FARBE_D)))
+        rechte_achsen.append((f'yaxis{n_sig + 1}', f'D ({v_einheit})',
+                               _extra_rng('v_axis_min', 'v_axis_max', '__v__'),
+                               dict(color=FARBE_D)))
     if show_acceleration and acceleration_ok:
-        a_lo = float(st.session_state.get('a_axis_min', 0))
-        a_hi = float(st.session_state.get('a_axis_max', 0))
-        a_rng = [a_lo, a_hi] if not (a_lo == 0 and a_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})', a_rng, dict(color=FARBE_D2)))
+        rechte_achsen.append((f'yaxis{n_sig + 2}', f'D2 ({a_einheit})',
+                               _extra_rng('a_axis_min', 'a_axis_max', '__a__'),
+                               dict(color=FARBE_D2)))
     if show_integral_curve:
-        i_lo = float(st.session_state.get('int_axis_min', 0))
-        i_hi = float(st.session_state.get('int_axis_max', 0))
-        i_rng = [i_lo, i_hi] if not (i_lo == 0 and i_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 3}', int_einheit or '∫', i_rng,
+        rechte_achsen.append((f'yaxis{n_sig + 3}', int_einheit or '∫',
+                               _extra_rng('int_axis_min', 'int_axis_max', '__int__'),
                                dict(color='rgba(0,150,255,0.85)')))
     if show_multi_diag:
-        md_lo = float(st.session_state.get('multi_diag_ymin', 0))
-        md_hi = float(st.session_state.get('multi_diag_ymax', 0))
-        md_rng = [md_lo, md_hi] if not (md_lo == 0 and md_hi == 0) else None
-        rechte_achsen.append((f'yaxis{n_sig + 4}', multi_diag_einheit or '∫IN1×IN2', md_rng,
+        rechte_achsen.append((f'yaxis{n_sig + 4}', multi_diag_einheit or '∫IN1×IN2',
+                               _extra_rng('multi_diag_ymin', 'multi_diag_ymax', '__md__'),
                                dict(color='rgba(130,0,200,0.85)')))
 
     n_right = len(rechte_achsen)
