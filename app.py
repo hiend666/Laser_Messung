@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.06"
+VERSION = "v1.01.07"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -165,6 +165,7 @@ defaults = {
     'export_format':        'PDF',
     'export_mit_werten':    False,
     'export_wert_auswahl':  [],
+    'x_rel_mode':           False,
 }
 for _i in range(1, N_KANÄLE + 1):
     defaults[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
@@ -361,9 +362,10 @@ def _make_cursor_cb(cursor: str, source: str):
     from_key = sw_key if source == 'slider' else nw_key
     to_key   = nw_key if source == 'slider' else sw_key
     def _cb():
-        val = max(0.0, float(st.session_state[from_key]))
-        st.session_state[cursor] = val
-        st.session_state[to_key] = val
+        t_off = float(st.session_state.get('_t_offset', 0.0))
+        val_rel = max(0.0, float(st.session_state[from_key]))
+        st.session_state[cursor] = round(val_rel + t_off, 3)
+        st.session_state[to_key] = val_rel
     return _cb
 
 update_xa_from_slider = _make_cursor_cb('xa', 'slider')
@@ -1114,6 +1116,10 @@ else:
     max_zeit = round(max_zeit_full, 3)
     max_idx  = max_idx_full
 
+# Relative Zeitachse: t_offset wird von allen Anzeigewerten subtrahiert
+t_offset = min_zeit if st.session_state.get('x_rel_mode', False) else 0.0
+st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen diesen Wert
+
 # ---------------------------------------------------------------------------
 # SIDEBAR: AUSWERTUNGS-STEUERUNG
 # ---------------------------------------------------------------------------
@@ -1146,9 +1152,9 @@ v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_ei
 xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 3)
 xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
 st.session_state.xa    = xa
-st.session_state.xa_sw = xa
+st.session_state.xa_sw = round(xa - t_offset, 3)
 st.session_state.xb    = xb
-st.session_state.xb_sw = xb
+st.session_state.xb_sw = round(xb - t_offset, 3)
 # Berechnungen nutzen immer den sortierten Bereich – Slider-Reihenfolge egal
 if xa > xb:
     xa, xb = xb, xa
@@ -1662,17 +1668,37 @@ if _ys_axis_range and len(_ys_axis_range) == 2:
 
 fig = go.Figure()
 
+# Relative Zeitachse: Chart-Variablen um t_offset verschieben (Daten bleiben intern absolut)
+if t_offset != 0.0:
+    def _ct(t): return (t - t_offset) if t is not None else None
+    df_plot_c = df_plot.copy()
+    df_plot_c['Zeit (ms)'] = df_plot_c['Zeit (ms)'] - t_offset
+    xa_c, xb_c       = xa - t_offset, xb - t_offset
+    min_c, max_c      = min_zeit - t_offset, max_zeit - t_offset
+    sop_c = [(t-t_offset, t0-t_offset, t1-t_offset, y) for t, t0, t1, y in sop_linien]
+    t_vmax_start_c, t_vmax_ende_c = _ct(t_vmax_start), _ct(t_vmax_ende)
+    t_vmin_start_c, t_vmin_ende_c = _ct(t_vmin_start), _ct(t_vmin_ende)
+    t_amax_f_c, t_amax_r_c        = _ct(t_amax_falling), _ct(t_amax_rising)
+else:
+    df_plot_c = df_plot
+    xa_c, xb_c  = xa, xb
+    min_c, max_c = min_zeit, max_zeit
+    sop_c = sop_linien
+    t_vmax_start_c, t_vmax_ende_c = t_vmax_start, t_vmax_ende
+    t_vmin_start_c, t_vmin_ende_c = t_vmin_start, t_vmin_ende
+    t_amax_f_c, t_amax_r_c        = t_amax_falling, t_amax_rising
+
 _baue_traces(
-    fig, df_plot, sichtbare_sensor_namen,
+    fig, df_plot_c, sichtbare_sensor_namen,
     kanal_zu_yaxis, active_sensor, active_yaxis,
     sensor_namen,
-    xa, xb, ya, yb, min_zeit, max_zeit,
+    xa_c, xb_c, ya, yb, min_c, max_c,
     show_v_avg, rect_fit, show_rect_fit, show_rect_fit_top,
-    has_vmax and mark_vmax, t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende,
-    has_vmin and mark_vmin, t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende,
-    has_amax_falling and mark_afall, t_amax_falling, y_amax_falling,
-    has_amax_rising  and mark_arise,  t_amax_rising,  y_amax_rising,
-    sop_linien,
+    has_vmax and mark_vmax, t_vmax_start_c, y_vmax_start, t_vmax_ende_c, y_vmax_ende,
+    has_vmin and mark_vmin, t_vmin_start_c, y_vmin_start, t_vmin_ende_c, y_vmin_ende,
+    has_amax_falling and mark_afall, t_amax_f_c, y_amax_falling,
+    has_amax_rising  and mark_arise,  t_amax_r_c, y_amax_rising,
+    sop_c,
     show_velocity, velocity, v_yaxis,
     show_acceleration, acceleration, a_yaxis,
     show_integral, int_yaxis, show_integral_curve,
@@ -1686,12 +1712,13 @@ _y_lim_keys = (
 _y_lim_token = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
 _axis_token  = hash(tuple(sorted(kanal_zu_yaxis.items())))
 
+_x_titel = f"Zeit rel. ({_zeit_einheit})" if t_offset != 0.0 else f"Zeit ({_zeit_einheit})"
 fig.update_layout(
-    xaxis_title=f"Zeit ({_zeit_einheit})",
+    xaxis_title=_x_titel,
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
@@ -1699,11 +1726,11 @@ fig.update_layout(
 # ∫IN1×IN2 dt Verlauf im Diagramm — kumulatives Integral des Produkts zwischen XA und XB
 if show_multi_diag and len(_mc_auswahl_diag) == 2:
     _mc_a_d, _mc_b_d = _mc_auswahl_diag
-    if _mc_a_d in df_plot.columns and _mc_b_d in df_plot.columns:
-        _prod_t    = df_plot['Zeit (ms)'].values
-        _prod_inst = df_plot[_mc_a_d].values * df_plot[_mc_b_d].values
+    if _mc_a_d in df_plot_c.columns and _mc_b_d in df_plot_c.columns:
+        _prod_t    = df_plot_c['Zeit (ms)'].values
+        _prod_inst = df_plot_c[_mc_a_d].values * df_plot_c[_mc_b_d].values
         _dt_prod   = float(_prod_t[1] - _prod_t[0]) if len(_prod_t) > 1 else 1.0
-        _mask_ab   = (_prod_t >= min(xa, xb)) & (_prod_t <= max(xa, xb))
+        _mask_ab   = (_prod_t >= min(xa_c, xb_c)) & (_prod_t <= max(xa_c, xb_c))
         if np.any(_mask_ab):
             _x_ab = _prod_t[_mask_ab]
             _y_ab = np.cumsum(_prod_inst[_mask_ab]) * _dt_prod
@@ -1738,14 +1765,16 @@ if _slider_right_pad > 0.01:
 else:
     c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
+    _sl_min = round(min_zeit - t_offset, 3)
+    _sl_max = round(max_zeit - t_offset, 3)
     st.slider(
-        "XA", min_zeit, max_zeit,
+        "XA", _sl_min, _sl_max,
         key="xa_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xa_from_slider, label_visibility="collapsed",
         help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
     st.slider(
-        "XB", min_zeit, max_zeit,
+        "XB", _sl_min, _sl_max,
         key="xb_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
         on_change=update_xb_from_slider, label_visibility="collapsed",
         help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
@@ -1759,7 +1788,10 @@ margin  = abs(xb - xa) * CROP_RAND_FAKTOR
 crop_t0 = max(min_zeit, min(xa, xb) - margin)
 crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
-btn_col1, btn_col2 = st.columns(2)
+btn_col0, btn_col1, btn_col2 = st.columns([1, 3, 4])
+with btn_col0:
+    st.toggle("L=0", key="x_rel_mode",
+              help="Relative Zeitachse: linker Rand = 0. Slider und Anzeige arbeiten in relativer Zeit.")
 with btn_col1:
     if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
@@ -1780,9 +1812,10 @@ with btn_col2:
         st.rerun()
 
 if crop_active:
+    _cs_disp = st.session_state.crop_start - t_offset
+    _ce_disp = st.session_state.crop_end   - t_offset
     st.caption(
-        f"✂️ Crop aktiv: {st.session_state.crop_start:.3f} {_zeit_einheit} – "
-        f"{st.session_state.crop_end:.3f} {_zeit_einheit}"
+        f"✂️ Crop aktiv: {_cs_disp:.3f} {_zeit_einheit} – {_ce_disp:.3f} {_zeit_einheit}"
     )
 
 # ---------------------------------------------------------------------------
@@ -1852,8 +1885,8 @@ if show_widerstand_integral and _w_kanal:
 st.sidebar.header("3. Export")
 metrics = {
     # Zeit & Signal
-    "XA":                       _fmt_zeit(xa, _zeit_einheit),
-    "XB":                       _fmt_zeit(xb, _zeit_einheit),
+    "XA":                       _fmt_zeit(xa - t_offset, _zeit_einheit),
+    "XB":                       _fmt_zeit(xb - t_offset, _zeit_einheit),
     "Δt (A-B)":                 _fmt_zeit(dt_val_ms, _zeit_einheit),
     "Frequenz Δt (A-B)":        _fmt_freq(freq_hz),
     "Δs (A-B)":                 _fmt_val(dy, _aktiv_einheit),
@@ -1902,7 +1935,7 @@ if show_multi_diag and len(_mc_auswahl_diag) == 2:
     _mc_d0, _mc_d1 = _mc_auswahl_diag
     if _mc_d0 in df.columns and _mc_d1 in df.columns:
         _multi_diag_export = {
-            'x':      df['Zeit (ms)'].values,
+            'x':      df['Zeit (ms)'].values - t_offset,
             'y':      df[_mc_d0].values * df[_mc_d1].values,
             'einheit': _produkt_einheit(kanal_einheit_map.get(_mc_d0,'?'), kanal_einheit_map.get(_mc_d1,'?')),
             'label':  f"{_mc_d0}×{_mc_d1}",
@@ -1947,7 +1980,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
 
             if _exp_format == "CSV (Oszi)":
                 _n_ex   = len(_ex_kanäle)
-                _zeit_s = _df_ex['Zeit (ms)'].values / _hz_faktor
+                _zeit_s = (_df_ex['Zeit (ms)'].values - t_offset) / _hz_faktor
                 header1 = 'x-axis,' + ','.join(str(i + 1) for i in range(_n_ex))
                 header2 = 'second,' + ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
                 _rows = [header1, header2]
@@ -1977,13 +2010,14 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     {k: v for k, v in metrics.items() if k in _wert_auswahl}
                     if _exp_mit_werten and _wert_auswahl else {}
                 )
+                _df_exp_c = df if t_offset == 0.0 else df.assign(**{'Zeit (ms)': df['Zeit (ms)'] - t_offset})
                 chart_png = build_chart_png(
-                    df, sichtbare_sensor_namen, active_sensor,
-                    xa, xb, ya, yb, show_v_avg,
-                    t_vmax_start, y_vmax_start, t_vmax_ende, y_vmax_ende, has_vmax and mark_vmax,
-                    t_vmin_start, y_vmin_start, t_vmin_ende, y_vmin_ende, has_vmin and mark_vmin,
-                    t_amax_falling, y_amax_falling, has_amax_falling and mark_afall,
-                    t_amax_rising,  y_amax_rising,  has_amax_rising  and mark_arise,
+                    _df_exp_c, sichtbare_sensor_namen, active_sensor,
+                    xa_c, xb_c, ya, yb, show_v_avg,
+                    t_vmax_start_c, y_vmax_start, t_vmax_ende_c, y_vmax_ende, has_vmax and mark_vmax,
+                    t_vmin_start_c, y_vmin_start, t_vmin_ende_c, y_vmin_ende, has_vmin and mark_vmin,
+                    t_amax_f_c, y_amax_falling, has_amax_falling and mark_afall,
+                    t_amax_r_c, y_amax_rising,  has_amax_rising  and mark_arise,
                     show_rect_fit=show_rect_fit,
                     show_rect_fit_top=show_rect_fit_top,
                     rect_fit=rect_fit,
@@ -1991,7 +2025,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     window_length=st.session_state.window_length,
                     show_acceleration=show_acceleration,
                     window_length_accel=st.session_state.window_length_accel,
-                    sop_linien=sop_linien,
+                    sop_linien=sop_c,
                     kanal_einheit_map=kanal_einheit_map,
                     alle_sensor_namen=sensor_namen,
                     hz_faktor=_hz_faktor,
