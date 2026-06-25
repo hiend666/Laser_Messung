@@ -1790,8 +1790,8 @@ crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
 btn_col0, btn_col1, btn_col2 = st.columns([1, 3, 4])
 with btn_col0:
-    st.toggle("L=0", key="x_rel_mode",
-              help="Relative Zeitachse: linker Rand = 0. Slider und Anzeige arbeiten in relativer Zeit.")
+    st.toggle("", key="x_rel_mode",
+              help="Start @ 0 – Relative Zeitachse: linker Rand = 0. Slider und Anzeige arbeiten in relativer Zeit.")
 with btn_col1:
     if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
