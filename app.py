@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.05"
+VERSION = "v1.01.06"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -811,11 +811,9 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.session_state.einstellungen  = False
             st.rerun()
 
-        offs = tuple(float(st.session_state.get(f'off{i+1}', 0.0)) for i in range(len(sensor_namen)))
     else:
         df_raw = None
         sensor_namen = []
-        offs = tuple()
 
     with st.expander("Y-Offset", expanded=st.session_state.sub_offsets, key="sub_offsets", on_change=_SUB_EXPANDER_CBS['sub_offsets']):
         if uploaded_file and df_raw is not None and sensor_namen:
@@ -858,25 +856,21 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 _v = -float(np.max(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-                st.rerun()
             if _ob2.button("Avg.", key="off_btn_avg", use_container_width=True,
                            help="Y-Offset: Mittelwert im A-B-Bereich → 0"):
                 _v = -float(np.mean(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-                st.rerun()
             if _ob3.button("Min.", key="off_btn_min", use_container_width=True,
                            help="Y-Offset: Minimalwert im A-B-Bereich → 0"):
                 _v = -float(np.min(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-                st.rerun()
             if _ob4.button("↺", key="reset_offsets", use_container_width=True,
                            help="Setzt alle Y-Offsets auf 0."):
                 for _ri in range(1, N_KANÄLE + 1):
                     st.session_state[f'off{_ri}']        = 0.0
                     st.session_state[f'off{_ri}_slider'] = 0.0
-                st.rerun()
 
             st.segmented_control(
                 "Schrittweite", _FEIN_STUFEN, key="off_fein_stufe",
