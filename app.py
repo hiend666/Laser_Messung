@@ -1167,25 +1167,30 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     mark_arise = st.toggle("D2-min", key="mark_arise", help="Marker des negativsten Beschleunigungs-Peaks (steigende Flanke) einzeichnen.")
     _tb_f = _hz_faktor / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
     _x_len = max(1e-9, max_zeit - min_zeit)
-    _tb_min_curr = _x_len * 0.02
+    # Bereich: 0,5 % … 50 % der Diagrammzeit
+    _tb_min_curr = _x_len * 0.005
     _tb_max_curr = _x_len * 0.50
-    _val_s_min = _tb_min_curr * _ZEIT_TO_S.get(_zeit_einheit, 1e-3)
+    # Einheit autoscale: so wählen dass max_curr im Bereich 0.100 … 500 liegt
+    _val_s_max = _tb_max_curr * _ZEIT_TO_S.get(_zeit_einheit, 1e-3)
     _tb_s_einheit = 'ns'
     for _u in ('s', 'ms', 'µs', 'ns'):
-        if abs(_val_s_min) / _ZEIT_TO_S[_u] >= 0.001:
+        _val_disp = _val_s_max / _ZEIT_TO_S[_u]
+        if 0.1 <= _val_disp <= 500:
             _tb_s_einheit = _u
+            break
+        if _val_disp > 500:
+            _tb_s_einheit = _u   # größte passende Einheit
             break
     _tb_s_scale = _ZEIT_TO_S.get(_zeit_einheit, 1e-3) / _ZEIT_TO_S[_tb_s_einheit]
     _tb_min_d = _tb_min_curr * _tb_s_scale
     _tb_max_d = _tb_max_curr * _tb_s_scale
     _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
-    _tb_step_d = max(1e-12, (_tb_max_d - _tb_min_d) / 100)
-    _tb_mag = _tb_min_d
-    _tb_fmt = ("%.0f" if _tb_mag >= 10 else
-               "%.2f" if _tb_mag >= 0.1 else
-               "%.4f" if _tb_mag >= 0.001 else "%.6f")
+    _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
+    _tb_fmt = ("%.0f" if _tb_max_d >= 10 else
+               "%.2f" if _tb_max_d >= 0.1 else
+               "%.4f" if _tb_max_d >= 0.001 else "%.6f")
     _v_tb_display = st.slider(
-        f"d/dt min./max. D ({_tb_s_einheit})",
+        f"Zeitfenster d/dt min./max. ({_tb_s_einheit})",
         _tb_min_d, _tb_max_d, _tb_def_d,
         step=_tb_step_d, format=f"{_tb_fmt} {_tb_s_einheit}",
         help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",

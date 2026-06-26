@@ -52,15 +52,40 @@ _ZEIT_TO_S: dict[str, float] = {'s': 1.0, 'ms': 1e-3, 'µs': 1e-6, 'ns': 1e-9}
 # ABLEITUNGS-EINHEITEN
 # ---------------------------------------------------------------------------
 
+_LAENGE_EINHEITEN = {'nm', 'µm', 'mm', 'm'}
+
+# Aufsteigende Längeneinheiten für Geschwindigkeit (Ziel: /s)
+_LAENGE_V_PRAEF = [
+    ('nm',  'nm/s'),
+    ('µm',  'µm/s'),
+    ('mm',  'mm/s'),
+    ('m',   'm/s'),
+]
+_LAENGE_A_PRAEF = [
+    ('nm',  'nm/s²'),
+    ('µm',  'µm/s²'),
+    ('mm',  'mm/s²'),
+    ('m',   'm/s²'),
+]
+
+
 def _ableit_info(einheit: str, zeit_einheit: str = 'ms') -> tuple[str, str, float, float]:
     """(v_einheit, a_einheit, v_faktor, a_faktor) für eine Kanal-Einheit.
 
     v_faktor/a_faktor wandeln SG-Rohableitung (einheit/s, einheit/s²) in
-    einheit/zeit_einheit bzw. einheit/zeit_einheit² um.
+    die Anzeigeeinheit um. Für Längeneinheiten wird /s bevorzugt, für alle
+    anderen Einheiten wird die Diagramm-Zeiteinheit verwendet.
     """
-    zhf = 1.0 / _ZEIT_TO_S.get(zeit_einheit, 1e-3)   # s⁻¹ → display_unit⁻¹
-    return (f'{einheit}/{zeit_einheit}', f'{einheit}/{zeit_einheit}²',
-            1.0 / zhf, 1.0 / (zhf ** 2))
+    if einheit in _LAENGE_EINHEITEN:
+        # SG liefert einheit/s → direkt als /s ausgeben, Faktor = 1
+        v_eu = f'{einheit}/s'
+        a_eu = f'{einheit}/s²'
+        return v_eu, a_eu, 1.0, 1.0
+    else:
+        # Nicht-Länge: wie bisher einheit/zeit_einheit
+        zhf = 1.0 / _ZEIT_TO_S.get(zeit_einheit, 1e-3)
+        return (f'{einheit}/{zeit_einheit}', f'{einheit}/{zeit_einheit}²',
+                1.0 / zhf, 1.0 / (zhf ** 2))
 
 
 # ---------------------------------------------------------------------------
