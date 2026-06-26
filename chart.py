@@ -54,19 +54,34 @@ _ZEIT_TO_S: dict[str, float] = {'s': 1.0, 'ms': 1e-3, 'µs': 1e-6, 'ns': 1e-9}
 
 _LAENGE_EINHEITEN = {'nm', 'µm', 'mm', 'm'}
 
-# Aufsteigende Längeneinheiten für Geschwindigkeit (Ziel: /s)
-_LAENGE_V_PRAEF = [
-    ('nm',  'nm/s'),
-    ('µm',  'µm/s'),
-    ('mm',  'mm/s'),
-    ('m',   'm/s'),
+# Längeneinheiten aufsteigend mit SI-Faktor (relativ zu m)
+_LAENGE_STUFEN: list[tuple[str, float]] = [
+    ('nm', 1e-9),
+    ('µm', 1e-6),
+    ('mm', 1e-3),
+    ('m',  1.0),
 ]
-_LAENGE_A_PRAEF = [
-    ('nm',  'nm/s²'),
-    ('µm',  'µm/s²'),
-    ('mm',  'mm/s²'),
-    ('m',   'm/s²'),
-]
+
+
+def _laenge_autoscale(kanal_einheit: str, wert_pro_s: float) -> tuple[str, float]:
+    """Wählt Längeneinheit/s so dass abs(wert) im Bereich 10–9999 liegt.
+
+    kanal_einheit: Basis-Längeneinheit (nm/µm/mm/m)
+    wert_pro_s: repräsentativer Betrag in kanal_einheit/s
+    Gibt (neue_längeneinheit, skalierungsfaktor) zurück.
+    skalierungsfaktor multipliziert mit dem Wert in kanal_einheit/s ergibt neue_einheit/s.
+    """
+    basis_si = next((f for u, f in _LAENGE_STUFEN if u == kanal_einheit), 1e-6)
+    wert_m_s = abs(wert_pro_s) * basis_si   # → m/s
+    if wert_m_s <= 0:
+        return kanal_einheit, 1.0
+    # Größte Einheit bei der der Wert noch >= 10 ist (auch kleinere als Basis erlaubt)
+    for u, f in reversed(_LAENGE_STUFEN):
+        if wert_m_s / f >= 10:
+            return u, basis_si / f          # kanal_einheit/s → u/s
+    # Kleinste verfügbare Einheit (nm)
+    u0, f0 = _LAENGE_STUFEN[0]
+    return u0, basis_si / f0
 
 
 def _ableit_info(einheit: str, zeit_einheit: str = 'ms') -> tuple[str, str, float, float]:
@@ -75,12 +90,11 @@ def _ableit_info(einheit: str, zeit_einheit: str = 'ms') -> tuple[str, str, floa
     v_faktor/a_faktor wandeln SG-Rohableitung (einheit/s, einheit/s²) in
     die Anzeigeeinheit um. Für Längeneinheiten wird /s bevorzugt, für alle
     anderen Einheiten wird die Diagramm-Zeiteinheit verwendet.
+    Längeneinheiten: Skalierung auf einheit/s (Faktor 1, Autoscale später).
     """
     if einheit in _LAENGE_EINHEITEN:
-        # SG liefert einheit/s → direkt als /s ausgeben, Faktor = 1
-        v_eu = f'{einheit}/s'
-        a_eu = f'{einheit}/s²'
-        return v_eu, a_eu, 1.0, 1.0
+        # SG liefert einheit/s → Faktor 1, Einheit wird später per _laenge_autoscale gesetzt
+        return f'{einheit}/s', f'{einheit}/s²', 1.0, 1.0
     else:
         # Nicht-Länge: wie bisher einheit/zeit_einheit
         zhf = 1.0 / _ZEIT_TO_S.get(zeit_einheit, 1e-3)

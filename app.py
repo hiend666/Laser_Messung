@@ -17,7 +17,7 @@ import reader
 from chart import (
     KANAL_FARBEN, FARBE_D, FARBE_D2, FARBE_V_SCHNITT,
     FARBE_VMAX, FARBE_AMAX, FARBE_CURSOR,
-    _ZEIT_TO_S, _ableit_info, _yachsen_layout,
+    _ZEIT_TO_S, _ableit_info, _laenge_autoscale, _LAENGE_EINHEITEN, _yachsen_layout,
     _zeichne_rechteck_fit, _zeichne_integral_flaeche, _finde_sop_kreuzungen,
     _baue_traces, build_chart_png, build_pdf,
 )
@@ -1479,6 +1479,26 @@ if idx_end > idx_start:
         idx_rising_abs                               = idx_start + int(np.argmin(sg_a_slice))
         a_min_rising, t_amax_rising, y_amax_rising   = _peak_marker(idx_rising_abs)
         has_amax_rising = True
+
+# --- Längen-Autoscale: v/a Einheit auf 10–9999 Bereich anpassen ---
+if _aktiv_einheit in _LAENGE_EINHEITEN:
+    # Referenzwert in kanal_einheit/s (v_faktor=1 für Längen, Werte direkt nutzbar)
+    _v_ref = max(abs(v_max) if not np.isnan(v_max) else 0.0,
+                 abs(v_min) if not np.isnan(v_min) else 0.0)
+    _a_ref = max(abs(a_max_falling) if not np.isnan(a_max_falling) else 0.0,
+                 abs(a_min_rising)  if not np.isnan(a_min_rising)  else 0.0)
+    if _v_ref > 0:
+        _v_disp_eu, _v_scale = _laenge_autoscale(_aktiv_einheit, _v_ref)
+        v_einheit     = f'{_v_disp_eu}/s'
+        v_faktor      = _v_scale          # SG-Rohwert → angezeigte Einheit/s
+        v_max         = v_max * _v_scale if not np.isnan(v_max) else v_max
+        v_min         = v_min * _v_scale if not np.isnan(v_min) else v_min
+    if _a_ref > 0:
+        _a_disp_eu, _a_scale = _laenge_autoscale(_aktiv_einheit, _a_ref)
+        a_einheit     = f'{_a_disp_eu}/s²'
+        a_faktor      = _a_scale ** 2     # SG-Rohwert (einheit/s²) → angezeigte Einheit/s²
+        a_max_falling = a_max_falling * (_a_scale ** 2) if not np.isnan(a_max_falling) else a_max_falling
+        a_min_rising  = a_min_rising  * (_a_scale ** 2) if not np.isnan(a_min_rising)  else a_min_rising
 
 if show_sop and rect_fit is not None:
     sop_linien, v_sop = _finde_sop_kreuzungen(
