@@ -737,7 +737,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 help="Leer lassen um diesen Kanal nicht einzulesen." if _in_datei
                      else "Dieser Kanal ist in der aktuellen Datei nicht vorhanden. Name bleibt für nächste Datei erhalten.",
             )
-            if file_type == "Oszilloskop CSV":
+            if file_type in ("Oszilloskop CSV", "CSV plain"):
                 _col_skale.number_input(
                     "×",
                     step=0.01, format="%.2f", key=_skale_key,

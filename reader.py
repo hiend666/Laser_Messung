@@ -97,7 +97,7 @@ def apply_offsets(
     """Wendet Y-Offsets an und gibt den verarbeiteten DataFrame zurück."""
     data: dict = {'Zeit (ms)': zeit}
     for name, arr, off in zip(kanal_namen, kanal_arrays, offsets):
-        data[name] = arr + off
+        data[name] = np.asarray(arr, dtype=np.float64) + float(off)
     return pd.DataFrame(data)
 
 
@@ -431,7 +431,7 @@ def load_raw(
         return read_hubmessung_txt(file_bytes, max_samples, kanal_namen), 1000.0
     if file_type == "Oszilloskop CSV":
         return read_oszilloskop_csv(file_bytes, max_samples, kanal_namen, kanal_skalierung)
-    return read_csv_plain(file_bytes, skip_rows, max_samples, kanal_namen), 1000.0
+    return read_csv_plain(file_bytes, skip_rows, max_samples, kanal_namen, kanal_skalierung), 1000.0
 
 
 def detect_kanal_count(file_bytes: bytes, file_type: str, skip_rows: int = 0) -> int:
@@ -503,7 +503,7 @@ def build_display_df(
     Gibt (df_full, tatsächliche_samplerate_hz) zurück.
     """
     if file_type in ("Hubmessung", "Oszilloskop CSV"):
-        zeit = raw_df['Zeit (ms)'].values
+        zeit = np.asarray(raw_df['Zeit (ms)'].values, dtype=np.float64)
         if len(zeit) > 1:
             dt = float(zeit[1] - zeit[0])
             if dt > 0:
