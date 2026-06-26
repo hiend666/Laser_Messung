@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.08"
+VERSION = "v1.01.09"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -1155,9 +1155,6 @@ else:
     max_zeit = round(max_zeit_full, 3)
     max_idx  = max_idx_full
 
-# Relative Zeitachse: t_offset wird von allen Anzeigewerten subtrahiert
-t_offset = min_zeit if st.session_state.get('x_rel_mode', False) else 0.0
-st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen diesen Wert
 
 # ---------------------------------------------------------------------------
 # SIDEBAR: AUSWERTUNGS-STEUERUNG
@@ -1190,9 +1187,14 @@ v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_ei
 
 xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 3)
 xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
-st.session_state.xa    = xa
+st.session_state.xa = xa
+st.session_state.xb = xb
+
+# Relative Zeitachse: Nullpunkt = linker Cursor (min der beiden Slider-Positionen)
+t_offset = min(xa, xb) if st.session_state.get('x_rel_mode', False) else 0.0
+st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen diesen Wert
+
 st.session_state.xa_sw = round(xa - t_offset, 3)
-st.session_state.xb    = xb
 st.session_state.xb_sw = round(xb - t_offset, 3)
 # Berechnungen nutzen immer den sortierten Bereich – Slider-Reihenfolge egal
 if xa > xb:
