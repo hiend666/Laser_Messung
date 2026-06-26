@@ -456,6 +456,8 @@ def _zeichne_integral_flaeche(fig: go.Figure, x_vals, y_vals, yaxis: str = 'y') 
     """Zeichnet Integralfläche mit zwei Farben: blau über 0, rot unter 0.
 
     Nulldurchgänge werden linear interpoliert, damit die Farbbereiche sauber trennen.
+    fill='toself' mit geschlossenem Polygon statt fill='tozeroy', da Kaleido
+    fill='tozeroy' auf Sekundärachsen (overlaying='y') nicht korrekt rendert.
     """
     x = np.asarray(x_vals, dtype=float)
     y = np.asarray(y_vals, dtype=float)
@@ -474,17 +476,24 @@ def _zeichne_integral_flaeche(fig: go.Figure, x_vals, y_vals, yaxis: str = 'y') 
 
     xa = np.array(x_list)
     ya = np.array(y_list)
+    zeros = np.zeros(len(xa))
 
+    # Geschlossenes Polygon: Kurve vorwärts + Nulllinie rückwärts
+    # fill='toself' funktioniert zuverlässig in Kaleido auf allen Achsen (primär + sekundär)
+    x_closed = np.concatenate([xa, xa[::-1]])
+
+    y_pos = np.maximum(ya, 0.0)
     fig.add_trace(go.Scatter(
-        x=xa, y=np.maximum(ya, 0.0),
-        fill='tozeroy', fillcolor=FARBE_INTEGRAL_POS,
-        line=dict(color='rgba(0,100,200,0.45)', width=1),
+        x=x_closed, y=np.concatenate([y_pos, zeros]),
+        fill='toself', fillcolor=FARBE_INTEGRAL_POS,
+        mode='lines', line=dict(color='rgba(0,100,200,0.45)', width=1),
         name='∫', yaxis=yaxis,
     ))
+    y_neg = np.minimum(ya, 0.0)
     fig.add_trace(go.Scatter(
-        x=xa, y=np.minimum(ya, 0.0),
-        fill='tozeroy', fillcolor=FARBE_INTEGRAL_NEG,
-        line=dict(color='rgba(200,50,0,0.45)', width=1),
+        x=x_closed, y=np.concatenate([y_neg, zeros]),
+        fill='toself', fillcolor=FARBE_INTEGRAL_NEG,
+        mode='lines', line=dict(color='rgba(200,50,0,0.45)', width=1),
         name='∫⁻', yaxis=yaxis, showlegend=False,
     ))
 

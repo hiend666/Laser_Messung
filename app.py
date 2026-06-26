@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.09"
+VERSION = "v1.01.10"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -1798,7 +1798,7 @@ fig.update_layout(
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
