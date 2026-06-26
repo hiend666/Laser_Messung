@@ -667,6 +667,10 @@ def build_chart_png(
     show_rect_fit=False, show_rect_fit_top=True, rect_fit=None,
     show_velocity=False, window_length=21,
     show_acceleration=False, window_length_accel=21,
+    velocity_data=None,
+    acceleration_data=None,
+    v_einheit_label: str | None = None,
+    a_einheit_label: str | None = None,
     sop_linien=None,
     kanal_einheit_map: dict | None = None,
     alle_sensor_namen: list[str] | None = None,
@@ -690,6 +694,10 @@ def build_chart_png(
 
     _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
     v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, zeit_einheit)
+    if v_einheit_label is not None:
+        v_einheit = v_einheit_label
+    if a_einheit_label is not None:
+        a_einheit = a_einheit_label
 
     _prim_einheit = next(iter(dict.fromkeys(kanal_einheit_map.get(n, 'µm') for n in sensor_namen)), 'µm')
     _prim_namen   = [n for n in sensor_namen if kanal_einheit_map.get(n, 'µm') == _prim_einheit] or sensor_namen
@@ -697,16 +705,20 @@ def build_chart_png(
     y_min   = float(df[_prim_namen].min().min())
     y_range = [y_min, y_max + (y_max - y_min) * Y_PUFFER]
 
-    velocity = acceleration = None
-    if len(df) > 1:
-        arr  = df[active_sensor].values
-        dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / hz_faktor
-        if show_velocity:
-            roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
-            velocity = roh * v_faktor if roh is not None else None
-        if show_acceleration:
-            roh = reader.berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
-            acceleration = roh * a_faktor if roh is not None else None
+    # Vorberechnete Arrays verwenden (korrekte Skalierung aus app.py);
+    # nur als Fallback intern neu berechnen wenn nichts übergeben wurde.
+    velocity     = velocity_data     if velocity_data     is not None else None
+    acceleration = acceleration_data if acceleration_data is not None else None
+    if velocity_data is None or acceleration_data is None:
+        if len(df) > 1:
+            arr  = df[active_sensor].values
+            dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / hz_faktor
+            if show_velocity and velocity_data is None:
+                roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
+                velocity = roh * v_faktor if roh is not None else None
+            if show_acceleration and acceleration_data is None:
+                roh = reader.berechne_sg_ableitung(arr, dt_s, window_length_accel, 2)
+                acceleration = roh * a_faktor if roh is not None else None
 
     _alle = alle_sensor_namen if alle_sensor_namen is not None else sensor_namen
     _kanal_farbe_map = {name: KANAL_FARBEN[_alle.index(name) if name in _alle else 0]

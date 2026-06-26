@@ -22,7 +22,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.07"
+VERSION = "v1.01.08"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -2100,8 +2100,12 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     rect_fit=rect_fit,
                     show_velocity=show_velocity,
                     window_length=st.session_state.window_length,
+                    velocity_data=(sg_v_roh * v_faktor) if show_velocity and sg_v_roh is not None else None,
                     show_acceleration=show_acceleration,
                     window_length_accel=st.session_state.window_length_accel,
+                    acceleration_data=(sg_a_roh * a_faktor) if show_acceleration and sg_a_roh is not None else None,
+                    v_einheit_label=v_einheit if show_velocity else None,
+                    a_einheit_label=a_einheit if show_acceleration else None,
                     sop_linien=sop_c,
                     kanal_einheit_map=kanal_einheit_map,
                     alle_sensor_namen=sensor_namen,
