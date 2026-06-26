@@ -468,10 +468,49 @@ def _slider_schritt_125(spanne: float, max_schritte: int = 500) -> float:
     return float(mag * 100)
 
 
+_LAENGE_AUTOSCALE_STUFEN = [
+    ('nm', 1e-9), ('µm', 1e-6), ('mm', 1e-3), ('m', 1.0),
+]
+
 def _fmt_val(value: float, einheit: str, prec: int = 3) -> str:
-    """Formatiert Messwert mit max. 6 Gesamtziffern (Vor- + Nachkommastellen)."""
+    """Formatiert Messwert mit Autoscaling für Längeneinheiten (nm/µm/mm/m).
+
+    Für Einheiten der Form '<länge>' oder '<länge>/s' oder '<länge>/s²' wird
+    der Wert automatisch in die passende Längeneinheit skaliert (10–9999).
+    """
     if np.isnan(value):
         return "N/A"
+
+    # Einheit zerlegen: Basis-Längeneinheit + Suffix (/s, /s², leer)
+    _suffix = ''
+    _basis = einheit
+    for _sfx in ('/s²', '/s'):
+        if einheit.endswith(_sfx):
+            _basis = einheit[:-len(_sfx)]
+            _suffix = _sfx
+            break
+
+    _laenge_si = next((f for u, f in _LAENGE_AUTOSCALE_STUFEN if u == _basis), None)
+
+    if _laenge_si is not None and value != 0:
+        # Wert in SI (m oder m/s oder m/s²)
+        val_si = abs(value) * _laenge_si
+        # Beste Einheit: größte bei der val_si/f >= 10
+        best_u, best_f = _LAENGE_AUTOSCALE_STUFEN[0]
+        for u, f in reversed(_LAENGE_AUTOSCALE_STUFEN):
+            if val_si / f >= 10:
+                best_u, best_f = u, f
+                break
+        scaled = value * (_laenge_si / best_f)
+        display_einheit = f'{best_u}{_suffix}'
+        abs_s = abs(scaled)
+        if abs_s == 0:
+            return f"0.000 {display_einheit}"
+        digits_before = max(1, int(np.floor(np.log10(abs_s))) + 1)
+        dec = max(0, min(prec, 6 - digits_before))
+        return f"{scaled:.{dec}f} {display_einheit}"
+
+    # Nicht-Länge oder Null: ursprüngliche Logik
     abs_v = abs(value)
     if abs_v == 0:
         return f"0.000 {einheit}"
@@ -1186,9 +1225,9 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     _tb_max_d = _tb_max_curr * _tb_s_scale
     _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
     _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
-    _tb_fmt = ("%.0f" if _tb_max_d >= 10 else
-               "%.2f" if _tb_max_d >= 0.1 else
-               "%.4f" if _tb_max_d >= 0.001 else "%.6f")
+    import math as _math
+    _tb_dez = max(0, -int(_math.floor(_math.log10(_tb_step_d)))) if _tb_step_d >= 1e-12 else 2
+    _tb_fmt = f"%.{_tb_dez}f"
     _v_tb_display = st.slider(
         f"Zeitfenster d/dt min./max. ({_tb_s_einheit})",
         _tb_min_d, _tb_max_d, _tb_def_d,
@@ -1465,8 +1504,8 @@ if idx_end > idx_start:
 
         def _peak_marker(idx_abs):
             """Gemittelter Beschleunigungswert und Diagramm-Position für einen Peak."""
-            ia0  = max(0, idx_abs - halbes_zeitfenster)
-            ia1  = min(max_idx, idx_abs + halbes_zeitfenster)
+            ia0  = max(idx_start, idx_abs - halbes_zeitfenster)
+            ia1  = min(idx_end,   idx_abs + halbes_zeitfenster)
             wert = float(np.mean(sg_a[ia0:ia1 + 1]))
             return wert, float(df.loc[idx_abs, 'Zeit (ms)']), float(df.loc[idx_abs, active_sensor])
 
@@ -1491,8 +1530,13 @@ if _aktiv_einheit in _LAENGE_EINHEITEN:
         _v_disp_eu, _v_scale = _laenge_autoscale(_aktiv_einheit, _v_ref)
         v_einheit     = f'{_v_disp_eu}/s'
         v_faktor      = _v_scale          # SG-Rohwert → angezeigte Einheit/s
-        v_max         = v_max * _v_scale if not np.isnan(v_max) else v_max
-        v_min         = v_min * _v_scale if not np.isnan(v_min) else v_min
+        v_max         = v_max         * _v_scale if not np.isnan(v_max)  else v_max
+        v_min         = v_min         * _v_scale if not np.isnan(v_min)  else v_min
+        # v_avg und v_cursor_delta wurden mit v_faktor=1.0 in einheit/s berechnet
+        v_avg          = v_avg          * _v_scale
+        v_cursor_delta = v_cursor_delta * _v_scale if not np.isnan(v_cursor_delta) else v_cursor_delta
+        v_at_xa        = v_at_xa        * _v_scale if not np.isnan(v_at_xa)        else v_at_xa
+        v_at_xb        = v_at_xb        * _v_scale if not np.isnan(v_at_xb)        else v_at_xb
     if _a_ref > 0:
         _a_disp_eu, _a_scale = _laenge_autoscale(_aktiv_einheit, _a_ref)
         a_einheit     = f'{_a_disp_eu}/s²'
@@ -1815,7 +1859,7 @@ crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
 btn_col0, btn_col1, btn_col2 = st.columns([1, 3, 4])
 with btn_col0:
-    st.toggle("", key="x_rel_mode",
+    st.toggle(" ", key="x_rel_mode",
               help="Start @ 0 – Relative Zeitachse: linker Rand = 0. Slider und Anzeige arbeiten in relativer Zeit.")
 with btn_col1:
     if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
@@ -1871,7 +1915,8 @@ a1, a2, a3, a4 = st.columns(4)
 if show_acceleration:
     a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
     a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
-a3.metric(f"∫{active_sensor} dt (A-B)",       _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
+if show_integral:
+    a3.metric(f"∫{active_sensor} dt (A-B)",   _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
 if show_multi_kanal and len(_mc_auswahl) == 2:
     _mc_einh_a = kanal_einheit_map.get(_mc_auswahl[0], '?')
     _mc_einh_b = kanal_einheit_map.get(_mc_auswahl[1], '?')
