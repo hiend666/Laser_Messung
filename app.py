@@ -1445,10 +1445,17 @@ if show_widerstand_integral and _w_kanal in df.columns and _w_kohm > 0 and idx_e
 # SG-ABLEITUNGEN – einmalig auf vollem Datensatz (Messwerte + Diagramm)
 # ---------------------------------------------------------------------------
 
-arr_full  = df[active_sensor].values
+arr_full  = df_use[active_sensor].values   # immer voller Datensatz – verhindert SG-Randeffekte beim Crop
 dt_step_s = 1.0 / sample_rate
-sg_v_roh  = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length, 1)
-sg_a_roh  = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+sg_v_roh_full = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length, 1)
+sg_a_roh_full = _sg_ableitung_cached(arr_full, dt_step_s, st.session_state.window_length_accel, 2)
+# Gecropten Slice extrahieren damit alle Folgeberechnungen auf df-Indizes passen
+if crop_active and sg_v_roh_full is not None:
+    sg_v_roh = sg_v_roh_full[ci_start:ci_end + 1]
+    sg_a_roh = sg_a_roh_full[ci_start:ci_end + 1] if sg_a_roh_full is not None else None
+else:
+    sg_v_roh = sg_v_roh_full
+    sg_a_roh = sg_a_roh_full
 
 # Peak-Marker-Initialisierung (werden nur gesetzt wenn genug Datenpunkte vorhanden)
 t_vmax_start, y_vmax_start = None, None
@@ -1545,6 +1552,7 @@ if _aktiv_einheit in _LAENGE_EINHEITEN:
         a_min_rising  = a_min_rising  * (_a_scale ** 2) if not np.isnan(a_min_rising)  else a_min_rising
 
 if show_sop and rect_fit is not None:
+    _sg_v_sop = (sg_v_roh * v_faktor) if sg_v_roh is not None else None
     sop_linien, v_sop = _finde_sop_kreuzungen(
         df_use['Zeit (ms)'].values,
         df_use[active_sensor].values,
@@ -1553,6 +1561,7 @@ if show_sop and rect_fit is not None:
         sample_rate,
         halbes_zeitfenster,
         v_faktor=v_faktor,
+        sg_v=_sg_v_sop,
     )
 
 # ---------------------------------------------------------------------------

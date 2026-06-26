@@ -380,12 +380,17 @@ def _finde_sop_kreuzungen(
     sample_rate: float,
     halbes_zeitfenster: int,
     v_faktor: float = 1e-3,
+    sg_v: np.ndarray | None = None,
 ) -> tuple[list, float]:
     """Findet SOP-Punkte an steigenden UND fallenden Flanken des Rechteck-Fits.
 
     Für jeden Puls werden steigende (Pulsanfang) und fallende (Pulsende) Flanken
     gesucht. Steigende Flanken werden bevorzugt: der v_sop-Messwert kommt vom
     ersten steigenden Kreuzungspunkt; ist keiner vorhanden, vom ersten fallenden.
+
+    sg_v: optional SG-Ableitungsarray (einheit/s, bereits mit v_faktor skaliert).
+          Wenn übergeben, wird daraus der gemittelte Wert am Kreuzungspunkt bestimmt
+          (konsistent mit D-max/D-min). Sonst Differenzenquotient auf signal.
 
     Gibt (sop_linien, v_sop) zurück:
     - sop_linien: Liste von (t_sop, t_links, t_rechts, y_level)
@@ -400,13 +405,16 @@ def _finde_sop_kreuzungen(
     ergebnisse = []   # (t_sop, t0, t1, y, v, flanke)  flanke: 'rise'|'fall'
 
     def _kreuzung(idx_abs: int, flanke: str):
-        i0   = max(0, idx_abs - halbes_zeitfenster)
-        i1   = min(n - 1, idx_abs + halbes_zeitfenster)
-        dt_s = (i1 - i0) / sample_rate
-        v    = ((signal[i1] - signal[i0]) * v_faktor) / dt_s if dt_s > 0 else float('nan')
-        t    = float(zeit[idx_abs])
-        t0   = float(zeit[max(0, idx_abs - 10)])
-        t1   = float(zeit[min(n - 1, idx_abs + 10)])
+        i0 = max(0, idx_abs - halbes_zeitfenster)
+        i1 = min(n - 1, idx_abs + halbes_zeitfenster)
+        if sg_v is not None and len(sg_v) == n:
+            v = float(np.mean(sg_v[i0:i1 + 1]))
+        else:
+            dt_s = (i1 - i0) / sample_rate
+            v = ((signal[i1] - signal[i0]) * v_faktor) / dt_s if dt_s > 0 else float('nan')
+        t  = float(zeit[idx_abs])
+        t0 = float(zeit[max(0, idx_abs - 10)])
+        t1 = float(zeit[min(n - 1, idx_abs + 10)])
         return (t, t0, t1, sop_level, v, flanke)
 
     for run in rect_fit['runs']:
