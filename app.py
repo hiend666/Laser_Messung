@@ -1167,8 +1167,8 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     mark_arise = st.toggle("D2-min", key="mark_arise", help="Marker des negativsten Beschleunigungs-Peaks (steigende Flanke) einzeichnen.")
     _tb_f = _hz_faktor / 1e3   # ms → aktuelle Zeiteinheit (Rückrechnung)
     _x_len = max(1e-9, max_zeit - min_zeit)
-    _tb_min_curr = _x_len / 200
-    _tb_max_curr = _x_len * 0.75
+    _tb_min_curr = _x_len * 0.02
+    _tb_max_curr = _x_len * 0.50
     _val_s_min = _tb_min_curr * _ZEIT_TO_S.get(_zeit_einheit, 1e-3)
     _tb_s_einheit = 'ns'
     for _u in ('s', 'ms', 'µs', 'ns'):
@@ -1185,7 +1185,7 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
                "%.2f" if _tb_mag >= 0.1 else
                "%.4f" if _tb_mag >= 0.001 else "%.6f")
     _v_tb_display = st.slider(
-        f"Zeitbasis d/dt-max ({_tb_s_einheit})",
+        f"d/dt min./max. D ({_tb_s_einheit})",
         _tb_min_d, _tb_max_d, _tb_def_d,
         step=_tb_step_d, format=f"{_tb_fmt} {_tb_s_einheit}",
         help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
@@ -1425,7 +1425,7 @@ sop_linien: list = []
 v_sop            = float('nan')
 
 if idx_end > idx_start:
-    if show_velocity and sg_v_roh is not None:
+    if sg_v_roh is not None:
         sg_v_signed = sg_v_roh * v_faktor
 
         # D-max: höchste (positivste) Geschwindigkeit – vorzeichenkorrekt
@@ -1455,7 +1455,7 @@ if idx_end > idx_start:
             y_vmin_ende  = df.loc[iv_min_ende,  active_sensor]
             has_vmin     = True
 
-    if show_acceleration and sg_a_roh is not None:
+    if sg_a_roh is not None:
         sg_a = sg_a_roh * a_faktor
 
         def _peak_marker(idx_abs):
@@ -1897,17 +1897,15 @@ metrics = {
     # Integral
     f"∫ {active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
-# SG-Peak-Werte nur wenn das jeweilige Feature aktiv ist
-if show_velocity:
-    if has_vmax:
-        metrics[f"d {active_sensor} /dt max"] = _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A"
-    if has_vmin:
-        metrics[f"d {active_sensor} /dt min"] = _fmt_val(v_min, v_einheit) if not np.isnan(v_min) else "N/A"
-if show_acceleration:
-    if has_amax_falling:
-        metrics[f"d² {active_sensor} /dt² max Fall."] = _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A"
-    if has_amax_rising:
-        metrics[f"d² {active_sensor} /dt² min Rise."] = _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A"
+# SG-Peak-Werte wenn Marker aktiv (unabhängig von d/dt-Linie)
+if has_vmax and mark_vmax:
+    metrics[f"d {active_sensor} /dt max"] = _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A"
+if has_vmin and mark_vmin:
+    metrics[f"d {active_sensor} /dt min"] = _fmt_val(v_min, v_einheit) if not np.isnan(v_min) else "N/A"
+if has_amax_falling and mark_afall:
+    metrics[f"d² {active_sensor} /dt² max Fall."] = _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A"
+if has_amax_rising and mark_arise:
+    metrics[f"d² {active_sensor} /dt² min Rise."] = _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A"
 # Multi-Kanal-Integral in Export aufnehmen (nur wenn Ergebnis vorhanden)
 if show_multi_kanal and len(st.session_state.get('multi_kanal_auswahl', [])) == 2:
     _mc_a_exp   = st.session_state['multi_kanal_auswahl'][0]
