@@ -218,6 +218,7 @@ def read_csv_plain(
     skip_rows: int,
     max_samples: int,
     kanal_namen: tuple[str, ...],
+    kanal_skalierung: tuple[float, ...] = (),
 ) -> pd.DataFrame:
     """Liest CSV plain Format (keine Zeitachse in der Datei).
 
@@ -247,7 +248,8 @@ def read_csv_plain(
             )
         result_df = pd.DataFrame()
         for i, name in enumerate(kanal_namen):
-            result_df[name] = df[data_cols[i]].values
+            skale = kanal_skalierung[i] if i < len(kanal_skalierung) else 1.0
+            result_df[name] = np.asarray(df[data_cols[i]].values, dtype=np.float64) * skale
 
     except ValueError as exc:
         df = pd.read_csv(io.BytesIO(file_bytes), sep=sep, decimal=dec, nrows=nrows)
@@ -262,7 +264,8 @@ def read_csv_plain(
             ) from exc
         result_df = pd.DataFrame()
         for i, name in enumerate(kanal_namen):
-            result_df[name] = df[sensor_cols[i]].values
+            skale = kanal_skalierung[i] if i < len(kanal_skalierung) else 1.0
+            result_df[name] = np.asarray(df[sensor_cols[i]].values, dtype=np.float64) * skale
 
     return result_df
 
