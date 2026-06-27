@@ -6,7 +6,9 @@ Messdaten-Auswertung – Laservibrometer CSV.
 Zeigt Signal-, D- und D2-Kurven (1. und 2. Ableitung) und
 exportiert Ergebnisse als PDF oder PNG.
 """
+import io
 import json
+import math
 
 import streamlit as st
 import pandas as pd
@@ -22,7 +24,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.10"
+VERSION = "v1.01.12"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -34,7 +36,6 @@ Y_PUFFER        = 0.15      # Y-Bereich-Puffer oben (15 %) – muss mit chart.Y_
 
 # Einheiten-Auswahl für Kanäle
 EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
-EINHEIT_ALLE     = EINHEIT_OPTIONEN   # Alias – für Session-State-Key-Generierung
 
 # Cursor-Startposition beim Laden einer neuen Datei (Anteil der Gesamtzeit)
 CURSOR_XA_INIT_FRAC = 0.30
@@ -49,9 +50,6 @@ SLIDER_STEP_SCHWELLEN = (600.0, 6000.0, 60000.0)
 
 # Rand beim Crop (Anteil des Cursor-Abstands beiderseits)
 CROP_RAND_FAKTOR = 0.15
-
-# k-Means Iterationen für Rechteck-Fit-Schwellwert-Berechnung
-K_MEANS_ITER = 5
 
 # Zeiteinheit-Lookup: hz_faktor (int) → Einheitenstring, abgeleitet aus _ZEIT_TO_S
 _ZEIT_HZ_ZU_EINHEIT: dict[int, str] = {round(1 / v): k for k, v in _ZEIT_TO_S.items()}
@@ -93,17 +91,17 @@ st.markdown("""
 # Widget-Keys (xa_sw, xa_nw, …) gehören ausschließlich den Widgets;
 # ihre on_change-Callbacks schreiben in den freien Key zurück.
 # Externe Setter (Buttons, Auto-Reset) schreiben nur in freie Keys.
+# Ausnahmen mit Einzelschlüssel (Widget = Wahrheitsquelle): ya_sw, yb_sw,
+# off_kanal_sel, active_sensor_name — diese haben keine schreibenden Callbacks.
 _CH_NAMEN_DEFAULT  = ['Festo', 'DST'] + [''] * (N_KANÄLE - 2)
 _OSC_SKALE_DEFAULT = [1.0, 1.0, 100.0] + [1.0] * (N_KANÄLE - 3)
 
-defaults = {
+# Speicherbare Einstellungen: Dict ist gleichzeitig Defaults und Schlüsselliste.
+# Neue saveable Keys hier eintragen – EINSTELLUNGEN_KEYS wird automatisch daraus abgeleitet.
+_EINSTELLUNGEN_DEFAULTS: dict = {
     'file_type_radio': 'CSV plain',
-    'xa': 0.0,        # freie Wahrheitsquelle – nie Widget-Key
-    'xb': 0.001,      # freie Wahrheitsquelle – nie Widget-Key
-    'xa_sw': 0.0,     # Widget-Key: Slider XA
-    'xb_sw': 0.001,   # Widget-Key: Slider XB
-    'zoom_token': 0,
-    'last_file_name': None,
+    'xa': 0.0,
+    'xb': 0.001,
     'sample_rate': 2.55,
     'sample_rate_unit': 'µs',
     'sample_rate_unit_toggle': True,
@@ -111,34 +109,29 @@ defaults = {
     'csv_header_aus_zeile1': False,
     'csv_einheit_aus_zeile2': False,
     'max_samples': 8000,
-    # Crop-State: None = "Show All", sonst t_start / t_end als float
-    'crop_start': None,
-    'crop_end': None,
     'show_v_avg': False,
-    'mark_vmax':  False,   # D-max Marker anzeigen
-    'mark_vmin':  False,   # D-min Marker anzeigen
-    'mark_afall': False,   # D2-max Marker anzeigen
-    'mark_arise': False,   # D2-min Marker anzeigen
+    'mark_vmax':  False,
+    'mark_vmin':  False,
+    'mark_afall': False,
+    'mark_arise': False,
     'show_rect_fit_top': False,
     'show_rect_fit': False,
     'show_y_slider': False,
     'ya_sw': 0.0,
     'yb_sw': 0.0,
     'show_velocity': False,
-    'window_length': 30,       # freier Key – nie Widget-Key
-    'window_length_sw': 30,    # Widget-Key: Slider Glättung D
+    'window_length': 30,
     'show_acceleration': False,
-    'window_length_accel': 40,     # freier Key – nie Widget-Key
-    'window_length_accel_sw': 40,  # Widget-Key: Slider Glättung D2
+    'window_length_accel': 40,
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
     'show_integral_curve': False,
-    'int_axis_min': 0,      # 0 = Autoscale
-    'int_axis_max': 0,      # 0 = Autoscale
+    'int_axis_min': 0,
+    'int_axis_max': 0,
     'show_multi_diag': False,
-    'multi_diag_ymin': 0,   # 0 = Autoscale
-    'multi_diag_ymax': 0,   # 0 = Autoscale
+    'multi_diag_ymin': 0,
+    'multi_diag_ymax': 0,
     'off_fein_stufe':   '1',
     'x_off_fein_stufe': '0,1',
     'off_kanal_sel': '',
@@ -147,11 +140,48 @@ defaults = {
     'show_widerstand_integral': False,
     'widerstand_kohm': 200.0,
     'widerstand_kanal': '',
-    'v_axis_min': 0,   # 0 = Autoscale
-    'v_axis_max': 0,   # 0 = Autoscale
-    'a_axis_min': 0,   # 0 = Autoscale
-    'a_axis_max': 0,   # 0 = Autoscale
-    'zeit_hz_faktor': 1000.0,  # Umrechnungsfaktor s → Anzeigeeinheit (1e3=ms, 1e6=µs, 1e9=ns)
+    'v_axis_min': 0,
+    'v_axis_max': 0,
+    'a_axis_min': 0,
+    'a_axis_max': 0,
+    'gleiche_nulllinie': False,
+    'export_format': 'PDF',
+    'export_mit_werten': False,
+    'export_wert_auswahl': [],
+    'pdf_titel': '',
+    'pdf_beschreibung': '',
+    'x_rel_mode': False,
+    'active_sensor_name': '',
+}
+for _i in range(1, N_KANÄLE + 1):
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_einheit'] = 'µm'
+    _EINSTELLUNGEN_DEFAULTS[f'osc_skale_{_i}'] = _OSC_SKALE_DEFAULT[_i - 1]
+    _EINSTELLUNGEN_DEFAULTS[f'off{_i}']        = 0.0
+    _EINSTELLUNGEN_DEFAULTS[f'off{_i}_slider'] = 0.0
+    _EINSTELLUNGEN_DEFAULTS[f'x_off{_i}']     = 0.0
+    _EINSTELLUNGEN_DEFAULTS[f'show_ch{_i}']   = True
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_sg_en']  = False
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_sg_win'] = 5
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_ymin']   = 0.0
+    _EINSTELLUNGEN_DEFAULTS[f'ch{_i}_ymax']   = 0.0
+for _e in EINHEIT_OPTIONEN:
+    _EINSTELLUNGEN_DEFAULTS[einheit_ss_key_min(_e)] = 0.0
+    _EINSTELLUNGEN_DEFAULTS[einheit_ss_key_max(_e)] = 0.0
+
+EINSTELLUNGEN_KEYS: list[str] = list(_EINSTELLUNGEN_DEFAULTS.keys())
+
+# Runtime-State: nicht gespeichert, nur für laufende Session
+_RUNTIME_DEFAULTS: dict = {
+    'xa_sw': 0.0,
+    'xb_sw': 0.001,
+    'zoom_token': 0,
+    'last_file_name': None,
+    'window_length_sw': 30,
+    'window_length_accel_sw': 40,
+    'crop_start': None,
+    'crop_end': None,
+    'zeit_hz_faktor': 1000.0,
     'n_kanäle_datei': N_KANÄLE,
     'sub_dateityp':   True,
     'sub_einlesen':   False,
@@ -161,63 +191,11 @@ defaults = {
     'sub_grenzwerte': False,
     'sub_speichern':  False,
     'einstellungen':  True,
-    'gleiche_nulllinie':    False,
-    'export_format':        'PDF',
-    'export_mit_werten':    False,
-    'export_wert_auswahl':  [],
-    'x_rel_mode':           False,
 }
-for _i in range(1, N_KANÄLE + 1):
-    defaults[f'ch{_i}_name']    = _CH_NAMEN_DEFAULT[_i - 1]
-    defaults[f'ch{_i}_einheit'] = 'µm'
-    defaults[f'osc_skale_{_i}'] = _OSC_SKALE_DEFAULT[_i - 1]
-    defaults[f'off{_i}']        = 0.0
-    defaults[f'off{_i}_slider'] = 0.0
-    defaults[f'x_off{_i}']     = 0.0
-    defaults[f'show_ch{_i}']   = True
-    defaults[f'ch{_i}_sg_en']  = False
-    defaults[f'ch{_i}_sg_win'] = 5
-for _e in EINHEIT_ALLE:
-    defaults[einheit_ss_key_min(_e)] = 0.0
-    defaults[einheit_ss_key_max(_e)] = 0.0
-for _i in range(1, N_KANÄLE + 1):
-    defaults[f'ch{_i}_ymin'] = 0.0
-    defaults[f'ch{_i}_ymax'] = 0.0
 
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-EINSTELLUNGEN_KEYS: list[str] = [
-    'file_type_radio',
-    'sample_rate', 'sample_rate_unit', 'sample_rate_unit_toggle',
-    'skip_rows', 'csv_header_aus_zeile1', 'csv_einheit_aus_zeile2', 'max_samples',
-    'xa', 'xb',
-    'show_v_avg', 'mark_vmax', 'mark_vmin', 'mark_afall', 'mark_arise',
-    'show_rect_fit_top', 'show_rect_fit',
-    'show_y_slider', 'ya_sw', 'yb_sw',
-    'show_velocity', 'window_length',
-    'show_acceleration', 'window_length_accel',
-    'show_sop', 'sop_percent',
-    'show_integral', 'show_integral_curve', 'int_axis_min', 'int_axis_max',
-    'show_multi_diag', 'multi_diag_ymin', 'multi_diag_ymax',
-    'off_fein_stufe', 'x_off_fein_stufe',
-    'show_multi_kanal', 'multi_kanal_auswahl',
-    'show_widerstand_integral', 'widerstand_kohm', 'widerstand_kanal',
-    'v_axis_min', 'v_axis_max', 'a_axis_min', 'a_axis_max',
-    'gleiche_nulllinie',
-    'export_format', 'export_mit_werten', 'export_wert_auswahl',
-]
-for _i in range(1, N_KANÄLE + 1):
-    EINSTELLUNGEN_KEYS += [
-        f'ch{_i}_name', f'ch{_i}_einheit', f'osc_skale_{_i}',
-        f'off{_i}', f'off{_i}_slider', f'x_off{_i}', f'show_ch{_i}',
-        f'ch{_i}_ymin', f'ch{_i}_ymax',
-        f'ch{_i}_sg_en', f'ch{_i}_sg_win',
-    ]
-for _e in EINHEIT_ALLE:
-    EINSTELLUNGEN_KEYS.append(einheit_ss_key_min(_e))
-    EINSTELLUNGEN_KEYS.append(einheit_ss_key_max(_e))
+for _k, _v in {**_EINSTELLUNGEN_DEFAULTS, **_RUNTIME_DEFAULTS}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
 
 # ---------------------------------------------------------------------------
@@ -247,65 +225,7 @@ def _detect_kanal_count_cached(file_bytes: bytes, file_type: str, skip_rows: int
 
 @st.cache_data
 def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
-    """Iteratives Rechteck-Fit für verrauschte Rechtecksignale (Huberkennung).
-
-    Gibt dict mit 'runs' (Liste von Pulsen mit t_start/t_end), 'y_low' und
-    'y_high' zurück, oder None wenn kein Rechteck erkennbar.
-    """
-    if len(signal) == 0:
-        return None
-    valid = ~np.isnan(signal)
-    if not np.any(valid):
-        return None
-    signal = signal[valid]
-    zeit   = zeit[valid]
-
-    min_val = float(np.nanpercentile(signal, 5))
-    max_val = float(np.nanpercentile(signal, 95))
-    if max_val <= min_val:
-        return None
-
-    threshold   = 0.5 * (min_val + max_val)
-    low_center  = min_val
-    high_center = max_val
-
-    for _ in range(K_MEANS_ITER):
-        high_mask = signal >= threshold
-        low_mask  = signal < threshold
-        if not np.any(high_mask) or not np.any(low_mask):
-            break
-        new_low  = float(np.median(signal[low_mask]))
-        new_high = float(np.median(signal[high_mask]))
-        if new_high <= new_low:
-            break
-        new_threshold = 0.5 * (new_low + new_high)
-        low_center  = new_low
-        high_center = new_high
-        if np.isclose(new_threshold, threshold):
-            threshold = new_threshold
-            break
-        threshold = new_threshold
-
-    high_mask = signal >= threshold
-    low_mask  = signal < threshold
-    if not np.any(high_mask) or not np.any(low_mask):
-        return None
-
-    runs  = []
-    start = 0
-    while start < len(high_mask):
-        if high_mask[start]:
-            end = start
-            while end < len(high_mask) and high_mask[end]:
-                end += 1
-            runs.append({'t_start': float(zeit[start]), 't_end': float(zeit[end - 1])})
-            start = end
-        else:
-            start += 1
-
-    if not runs:
-        return None
-    return {'runs': runs, 'y_low': low_center, 'y_high': high_center}
+    return reader.berechne_rechteck_fit(zeit, signal)
 
 
 @st.cache_data
@@ -459,7 +379,6 @@ def _slider_schritt_125(spanne: float, max_schritte: int = 500) -> float:
     """
     if spanne <= 0:
         return 1.0
-    import math
     mag   = 10 ** math.floor(math.log10(spanne / max_schritte))
     for m in (1, 2, 5, 10, 20, 50):
         s = mag * m
@@ -570,12 +489,34 @@ def _make_sub_expander_cb(this_key: str):
 _SUB_EXPANDER_CBS = {k: _make_sub_expander_cb(k) for k in _SUB_EXPANDER_KEYS}
 
 
+def _get_raw_bytes(f) -> bytes:
+    """Gibt Datei-Bytes zurück – bei CSX-Dateien ohne den eingebetteten Settings-Block."""
+    raw, _ = reader.split_csx(f.getvalue())
+    return raw
+
+
 def on_file_upload():
-    """Schließt Einstellungen-Expander beim Hochladen einer neuen Datei."""
-    if st.session_state.get('_file_uploader') is not None:
+    """Schließt Einstellungen-Expander beim Hochladen; bei CSX werden Einstellungen geladen."""
+    f = st.session_state.get('_file_uploader')
+    if f is not None:
         st.session_state.einstellungen = False
         for _k in _SUB_EXPANDER_KEYS:
             st.session_state[_k] = False
+        # Titel/Beschreibung bei neuer Datei zurücksetzen (CSX-Einstellungen überschreiben danach)
+        if st.session_state.get('last_file_name') != f.name:
+            st.session_state['pdf_titel']        = f"Messdaten-Auswertung – {f.name}"[:50]
+            st.session_state['pdf_beschreibung'] = ''
+        # CSX: eingebettete Einstellungen automatisch anwenden (nur beim ersten Upload)
+        if (f.name.lower().endswith('.csx')
+                and st.session_state.get('last_file_name') != f.name):
+            _, _csx_cfg = reader.split_csx(f.getvalue())
+            if _csx_cfg:
+                for _k, _v in _csx_cfg.items():
+                    if _k in EINSTELLUNGEN_KEYS:
+                        st.session_state[_k] = _v
+                st.session_state['window_length_sw']       = st.session_state.get('window_length', 30)
+                st.session_state['window_length_accel_sw'] = st.session_state.get('window_length_accel', 40)
+                st.session_state['_csx_settings_loaded']   = True
 
 
 def on_settings_upload():
@@ -658,9 +599,9 @@ _hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
 _zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
 
 if file_type == "Hubmessung":
-    file_extensions = ["txt"]
+    file_extensions = ["txt", "csx"]
 else:
-    file_extensions = ["csv"]
+    file_extensions = ["csv", "csx"]
 
 uploaded_file = st.sidebar.file_uploader(
     "upload", type=file_extensions, label_visibility="collapsed",
@@ -721,21 +662,20 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
 
     _n_show = N_KANÄLE
     if uploaded_file:
+        file_bytes = _get_raw_bytes(uploaded_file)
         try:
             _n_show = min(N_KANÄLE, max(1, _detect_kanal_count_cached(
-                uploaded_file.getvalue(), file_type,
+                file_bytes, file_type,
                 st.session_state.get('skip_rows', 12),
             )))
         except Exception:
             pass
         st.session_state['n_kanäle_datei'] = _n_show
 
-    if uploaded_file and _n_show > 0:
+    if uploaded_file and _n_show > 0:  # file_bytes ist hier garantiert definiert (uploaded_file truthy)
         if (file_type == "CSV plain"
                 and st.session_state.get('csv_header_aus_zeile1', False)):
-            _header_namen = reader.peek_csv_plain_kanalnames(
-                uploaded_file.getvalue(), _n_show
-            )
+            _header_namen = reader.peek_csv_plain_kanalnames(file_bytes, _n_show)
             for _i, _hname in enumerate(_header_namen, 1):
                 st.session_state[f'ch{_i}_name'] = _hname
             for _i in range(len(_header_namen) + 1, _n_show + 1):
@@ -743,7 +683,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                     st.session_state[f'ch{_i}_name'] = f'Kanal {_i}'
             if st.session_state.get('csv_einheit_aus_zeile2', False):
                 _header_einh = reader.peek_csv_plain_einheiten(
-                    uploaded_file.getvalue(), _n_show, EINHEIT_OPTIONEN
+                    file_bytes, _n_show, EINHEIT_OPTIONEN
                 )
                 for _i, _einh in enumerate(_header_einh, 1):
                     if _einh is not None:
@@ -757,7 +697,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
         st.caption("Leer: wird beim Schließen automatisch als 'Kanal N' benannt.")
         _osc_einheiten: list[str] = []
         if file_type == "Oszilloskop CSV" and uploaded_file:
-            _, _osc_einheiten = reader.peek_oszilloskop_header(uploaded_file.getvalue())
+            _, _osc_einheiten = reader.peek_oszilloskop_header(file_bytes)
         for _ki in range(N_KANÄLE):
             _i         = _ki + 1
             _ch_key    = f'ch{_i}_name'
@@ -818,7 +758,6 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.stop()
 
         sensor_namen = list(kanal_namen_tuple)
-        file_bytes = uploaded_file.getvalue()
         _osc_skale_tuple = tuple(
             st.session_state[f'osc_skale_{i+1}'] for i in range(len(kanal_namen_tuple))
         )
@@ -839,12 +778,14 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 total_time_ms = float(df_raw['Zeit (ms)'].iloc[-1])
             else:
                 total_time_ms = len(df_raw) / sample_rate * _hz_f_init
-            for i in range(1, N_KANÄLE + 1):
-                st.session_state[f'off{i}']        = 0.0
-                st.session_state[f'off{i}_slider'] = 0.0
-            for _i in range(1, N_KANÄLE + 1):
-                st.session_state[f'show_ch{_i}'] = True
-            _setze_cursor_position(total_time_ms)
+            # Bei CSX-Dateien Cursor/Offsets NICHT zurücksetzen – kommen aus den eingebetteten Einstellungen
+            if not st.session_state.pop('_csx_settings_loaded', False):
+                for i in range(1, N_KANÄLE + 1):
+                    st.session_state[f'off{i}']        = 0.0
+                    st.session_state[f'off{i}_slider'] = 0.0
+                for _i in range(1, N_KANÄLE + 1):
+                    st.session_state[f'show_ch{_i}'] = True
+                _setze_cursor_position(total_time_ms)
             st.session_state.crop_start     = None
             st.session_state.crop_end       = None
             st.session_state.zoom_token    += 1
@@ -1108,28 +1049,6 @@ if any(v != 0.0 for v in _x_offs) and len(df_full) > 1:
 else:
     df_use = df_full
 
-# ---------------------------------------------------------------------------
-# AUTO-RESET BEI NEUER DATEI
-# ---------------------------------------------------------------------------
-
-if st.session_state.last_file_name != uploaded_file.name:
-    total_time_ms = float(df_use['Zeit (ms)'].iloc[-1])
-    for i, name in enumerate(sensor_namen, 1):
-        off_init = float(df_raw[name].min()) * -1.0
-        st.session_state[f'off{i}']        = off_init
-        st.session_state[f'off{i}_slider'] = off_init
-    for i in range(len(sensor_namen) + 1, N_KANÄLE + 1):
-        st.session_state[f'off{i}']        = 0.0
-        st.session_state[f'off{i}_slider'] = 0.0
-    for i in range(1, N_KANÄLE + 1):
-        st.session_state[f'x_off{i}'] = 0.0
-    _setze_cursor_position(total_time_ms)
-    st.session_state.crop_start     = None
-    st.session_state.crop_end       = None
-    st.session_state.zoom_token    += 1
-    st.session_state.last_file_name = uploaded_file.name
-    st.rerun()
-
 max_zeit_full = float(df_use['Zeit (ms)'].iloc[-1])
 max_idx_full  = len(df_use) - 1
 
@@ -1161,9 +1080,12 @@ else:
 # ---------------------------------------------------------------------------
 
 st.sidebar.header("2. Auswertung")
+if st.session_state.get('active_sensor_name', '') not in sensor_namen:
+    st.session_state['active_sensor_name'] = sensor_namen[0]
 active_sensor = st.sidebar.radio(
     "Kanal für Messung:", sensor_namen,
     horizontal=True, label_visibility="collapsed",
+    key='active_sensor_name',
     help="Aktiver Kanal (IN1) für alle Berechnungen: Cursor-Messung, d/dt-max, d²/dt²-max und SOP.",
 )
 
@@ -1194,6 +1116,9 @@ st.session_state.xb = xb
 t_offset = min(xa, xb) if st.session_state.get('x_rel_mode', False) else 0.0
 st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen diesen Wert
 
+# xa_sw/xb_sw müssen VOR dem Widget-Rendering gesetzt werden, weil x_rel_mode
+# die Darstellung transformiert (xa - t_offset). Callbacks dürfen hier nicht
+# verwendet werden, da t_offset erst jetzt bekannt ist.
 st.session_state.xa_sw = round(xa - t_offset, 3)
 st.session_state.xb_sw = round(xb - t_offset, 3)
 # Berechnungen nutzen immer den sortierten Bereich – Slider-Reihenfolge egal
@@ -1227,8 +1152,7 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     _tb_max_d = _tb_max_curr * _tb_s_scale
     _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
     _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
-    import math as _math
-    _tb_dez = max(0, -int(_math.floor(_math.log10(_tb_step_d)))) if _tb_step_d >= 1e-12 else 2
+    _tb_dez = max(0, -int(math.floor(math.log10(_tb_step_d)))) if _tb_step_d >= 1e-12 else 2
     _tb_fmt = f"%.{_tb_dez}f"
     _v_tb_display = st.slider(
         f"Zeitfenster d/dt min./max. ({_tb_s_einheit})",
@@ -1617,13 +1541,10 @@ for _n in sichtbare_sensor_namen:
 # --- Gleiche Nulllinie: interne Limits berechnen (alle Automatik-Achsen) ---
 _nulllinie_ranges: dict[str, tuple[float, float]] = {}
 if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_namen) > 1:
-    import math as _math
-
     def _runde_scale(v: float) -> float:
-        """Rundet v auf die nächste 1-2-5-Zahl auf (aufwärts)."""
-        if not _math.isfinite(v) or v <= 0:
+        if not math.isfinite(v) or v <= 0:
             return 1.0
-        mag = 10 ** _math.floor(_math.log10(v))
+        mag = 10 ** math.floor(math.log10(v))
         for fak in (1, 2, 5, 10, 20, 50, 100):
             k = fak * mag
             if k >= v:
@@ -1645,14 +1566,14 @@ if st.session_state.get('gleiche_nulllinie', False) and len(sichtbare_sensor_nam
         if float(st.session_state.get('v_axis_min', 0)) == 0 and float(st.session_state.get('v_axis_max', 0)) == 0:
             _v_arr = sg_v_roh * v_faktor
             _v_lo_nl, _v_hi_nl = float(np.nanmin(_v_arr)), float(np.nanmax(_v_arr))
-            if _math.isfinite(_v_lo_nl) and _math.isfinite(_v_hi_nl):
+            if math.isfinite(_v_lo_nl) and math.isfinite(_v_hi_nl):
                 _alle_auto_bereiche['__v__'] = (_v_lo_nl, _v_hi_nl)
 
     if show_acceleration and sg_a_roh is not None:
         if float(st.session_state.get('a_axis_min', 0)) == 0 and float(st.session_state.get('a_axis_max', 0)) == 0:
             _a_arr = sg_a_roh * a_faktor
             _a_lo_nl, _a_hi_nl = float(np.nanmin(_a_arr)), float(np.nanmax(_a_arr))
-            if _math.isfinite(_a_lo_nl) and _math.isfinite(_a_hi_nl):
+            if math.isfinite(_a_lo_nl) and math.isfinite(_a_hi_nl):
                 _alle_auto_bereiche['__a__'] = (_a_lo_nl, _a_hi_nl)
 
     if show_integral_curve and active_sensor in df_use.columns and len(df_use) > 1:
@@ -1723,6 +1644,18 @@ _mc_diag_eu = (
                      kanal_einheit_map.get(_mc_auswahl_diag[1],'?')) + f'·{_zeit_einheit}'
     if show_multi_diag and len(_mc_auswahl_diag) == 2 else ''
 )
+_y_limits: dict[str, float] = {
+    **{f'ch{i}_ymin': float(st.session_state.get(f'ch{i}_ymin', 0)) for i in range(1, N_KANÄLE + 1)},
+    **{f'ch{i}_ymax': float(st.session_state.get(f'ch{i}_ymax', 0)) for i in range(1, N_KANÄLE + 1)},
+    'v_axis_min':      float(st.session_state.get('v_axis_min', 0)),
+    'v_axis_max':      float(st.session_state.get('v_axis_max', 0)),
+    'a_axis_min':      float(st.session_state.get('a_axis_min', 0)),
+    'a_axis_max':      float(st.session_state.get('a_axis_max', 0)),
+    'int_axis_min':    float(st.session_state.get('int_axis_min', 0)),
+    'int_axis_max':    float(st.session_state.get('int_axis_max', 0)),
+    'multi_diag_ymin': float(st.session_state.get('multi_diag_ymin', 0)),
+    'multi_diag_ymax': float(st.session_state.get('multi_diag_ymax', 0)),
+}
 kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x_domain_end = _yachsen_layout(
     sichtbare_sensor_namen, kanal_einheit_map, y_range_plot,
     show_velocity, velocity_ok, show_acceleration, acceleration_ok,
@@ -1736,6 +1669,7 @@ kanal_zu_yaxis, layout_yachsen, v_yaxis, a_yaxis, int_yaxis, multi_diag_yaxis, x
     show_multi_diag=show_multi_diag and len(_mc_auswahl_diag) == 2,
     multi_diag_einheit=_mc_diag_eu,
     nulllinie_ranges=_nulllinie_ranges if _nulllinie_ranges else None,
+    y_limits=_y_limits,
 )
 active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -2024,7 +1958,7 @@ if show_multi_diag and len(_mc_auswahl_diag) == 2:
 
 # --- Export-Format-Auswahl ---
 st.sidebar.radio(
-    "Format", ["PDF", "PNG", "CSV (Oszi)", "CSV (plain)"], horizontal=True,
+    "Format", ["PDF", "PNG", "CSV (Oszi)", "CSV (plain)", "CSX"], horizontal=True,
     key="export_format", label_visibility="collapsed",
 )
 _exp_format = st.session_state.get("export_format", "PDF")
@@ -2048,6 +1982,21 @@ if _exp_mit_werten and _exp_ist_diagramm:
         key="export_wert_auswahl",
         help="Welche Messwerte sollen exportiert werden?",
     )
+with st.sidebar.expander("Beschreibung", expanded=False):
+    st.text_input(
+        "Überschrift",
+        key="pdf_titel",
+        max_chars=50,
+        help="Titelzeile im PDF (max. 50 Zeichen). Leer = automatisch aus Dateiname.",
+    )
+    st.text_area(
+        "Beschreibung",
+        key="pdf_beschreibung",
+        max_chars=200,
+        height=80,
+        help="Wird in kleinerer Schrift unter der Überschrift im PDF angezeigt (max. 200 Zeichen).",
+    )
+
 if st.sidebar.button("📥 Export erstellen", width="stretch",
                      help="Erstellt die Exportdatei im gewählten Format – Download-Button erscheint danach."):
     with st.spinner("Wird erstellt..."):
@@ -2058,29 +2007,39 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
             _df_ex      = df[_valid_mask].reset_index(drop=True)
 
             if _exp_format == "CSV (Oszi)":
-                _n_ex   = len(_ex_kanäle)
-                _zeit_s = (_df_ex['Zeit (ms)'].values - t_offset) / _hz_faktor
-                header1 = 'x-axis,' + ','.join(str(i + 1) for i in range(_n_ex))
-                header2 = 'second,' + ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
-                _rows = [header1, header2]
-                for _ri in range(len(_df_ex)):
-                    _row = f"{_zeit_s[_ri]:.10e}"
-                    for _k in _ex_kanäle:
-                        _row += f",{_df_ex[_k].iloc[_ri]:.8e}"
-                    _rows.append(_row)
-                _csv_bytes = '\n'.join(_rows).encode('utf-8')
+                _n_ex      = len(_ex_kanäle)
+                _zeit_s    = (_df_ex['Zeit (ms)'].values - t_offset) / _hz_faktor
+                _data_mat  = np.column_stack([_zeit_s] + [_df_ex[k].values for k in _ex_kanäle])
+                _buf       = io.StringIO()
+                np.savetxt(_buf, _data_mat, fmt=['%.10e'] + ['%.8e'] * _n_ex, delimiter=',')
+                _csv_bytes = (
+                    'x-axis,' + ','.join(str(i + 1) for i in range(_n_ex)) + '\n'
+                    + 'second,' + ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle) + '\n'
+                    + _buf.getvalue()
+                ).encode('utf-8')
                 st.sidebar.download_button("💾 CSV herunterladen", _csv_bytes,
                     file_name=f"{stem}_osc.csv", mime="text/csv", width="stretch")
 
             elif _exp_format == "CSV (plain)":
-                header1 = ','.join(_ex_kanäle)
-                header2 = ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle)
-                _rows = [header1, header2]
-                for _ri in range(len(_df_ex)):
-                    _rows.append(','.join(f"{_df_ex[_k].iloc[_ri]:.8e}" for _k in _ex_kanäle))
-                _csv_bytes = '\n'.join(_rows).encode('utf-8')
+                _csv_bytes = (
+                    ','.join(_ex_kanäle) + '\n'
+                    + ','.join(kanal_einheit_map.get(k, '') for k in _ex_kanäle) + '\n'
+                    + _df_ex[_ex_kanäle].to_csv(index=False, header=False, float_format='%.8e')
+                ).encode('utf-8')
                 st.sidebar.download_button("💾 CSV herunterladen", _csv_bytes,
                     file_name=f"{stem}_plain.csv", mime="text/csv", width="stretch")
+
+            elif _exp_format == "CSX":
+                _csx_cfg = {k: st.session_state[k] for k in EINSTELLUNGEN_KEYS if k in st.session_state}
+                _csx_json = json.dumps(_csx_cfg, ensure_ascii=False).encode('utf-8')
+                _csx_bytes = (
+                    file_bytes
+                    + b"\n###CSX_SETTINGS_BEGIN###\n"
+                    + _csx_json
+                    + b"\n###CSX_SETTINGS_END###\n"
+                )
+                st.sidebar.download_button("💾 CSX herunterladen", _csx_bytes,
+                    file_name=f"{stem}.csx", mime="text/plain", width="stretch")
 
             else:
                 # --- Diagramm-Export (PDF / PNG) ---
@@ -2124,9 +2083,14 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     y_ranges_fallback=_yrange_fallback,
                     metrics=metrics_export if _exp_format == "PNG" else {},
                     nulllinie_ranges=_nulllinie_ranges if _nulllinie_ranges else None,
+                    y_limits=_y_limits,
                 )
                 if _exp_format == "PDF":
-                    file_bytes_out = build_pdf(uploaded_file.name, chart_png, metrics_export)
+                    file_bytes_out = build_pdf(
+                        uploaded_file.name, chart_png, metrics_export,
+                        pdf_titel=st.session_state.get('pdf_titel', ''),
+                        pdf_beschreibung=st.session_state.get('pdf_beschreibung', ''),
+                    )
                     st.sidebar.download_button("💾 PDF herunterladen", file_bytes_out,
                         file_name=f"{stem}_auswertung.pdf", mime="application/pdf", width="stretch")
                 else:

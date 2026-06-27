@@ -6,7 +6,6 @@ und alle zugehörigen Berechnungshilfen (keine Streamlit-UI-Widgets).
 import io
 import datetime
 
-import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
 from reportlab.lib.pagesizes import A4, landscape
@@ -125,6 +124,7 @@ def _yachsen_layout(
     show_multi_diag: bool = False,
     multi_diag_einheit: str = '',
     nulllinie_ranges: dict[str, tuple[float, float]] | None = None,
+    y_limits: dict[str, float] | None = None,
 ) -> tuple[dict, dict, str, str, str, str, float]:
     """Berechnet Y-Achsen-Zuordnung und Plotly-Layout für alle Achsen.
 
@@ -142,6 +142,7 @@ def _yachsen_layout(
     - x_domain_end:    rechte Grenze des Plot-Bereichs (0…1)
     """
     _ch_num = kanal_ch_num or {}
+    _ylim   = y_limits or {}
 
     def _user_lim_kanal(name: str) -> tuple[float, float] | None:
         # Gleiche-Nulllinie-Override hat Vorrang vor manuellen Grenzen
@@ -150,8 +151,8 @@ def _yachsen_layout(
         ch_i = _ch_num.get(name, 0)
         if ch_i == 0:
             return None
-        lo = float(st.session_state.get(f'ch{ch_i}_ymin', 0))
-        hi = float(st.session_state.get(f'ch{ch_i}_ymax', 0))
+        lo = float(_ylim.get(f'ch{ch_i}_ymin', 0))
+        hi = float(_ylim.get(f'ch{ch_i}_ymax', 0))
         return (lo, hi) if (lo != 0 or hi != 0) else None
 
     def _kanal_span(name: str) -> float | None:
@@ -257,12 +258,9 @@ def _yachsen_layout(
     for i, (titel, kanäle) in enumerate(final_achsen[1:], 1):
         rechte_achsen.append((f'yaxis{i + 1}', titel, _rng(titel, kanäle), _achsfarbe(kanäle)))
     def _extra_rng(ss_min_key: str, ss_max_key: str, nl_key: str) -> list | None:
-        """Gibt den Achsbereich für eine Zusatzachse zurück.
-
-        Priorität: manuelle Grenzen > Gleiche-Nulllinie-Override > None (Plotly-Autoscale).
-        """
-        lo = float(st.session_state.get(ss_min_key, 0))
-        hi = float(st.session_state.get(ss_max_key, 0))
+        # Priorität: manuelle Grenzen > Gleiche-Nulllinie-Override > None (Plotly-Autoscale)
+        lo = float(_ylim.get(ss_min_key, 0))
+        hi = float(_ylim.get(ss_max_key, 0))
         if not (lo == 0 and hi == 0):
             return [lo, hi]
         if nulllinie_ranges and nl_key in nulllinie_ranges:
@@ -696,6 +694,7 @@ def build_chart_png(
     y_ranges_fallback: dict | None = None,
     metrics: dict | None = None,
     nulllinie_ranges: dict | None = None,
+    y_limits: dict[str, float] | None = None,
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -755,6 +754,7 @@ def build_chart_png(
         show_multi_diag=bool(_md),
         multi_diag_einheit=_md_eu,
         nulllinie_ranges=nulllinie_ranges,
+        y_limits=y_limits,
     )
     active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
@@ -865,7 +865,13 @@ def build_chart_png(
 # EXPORT: PDF
 # ---------------------------------------------------------------------------
 
-def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
+def build_pdf(
+    filename: str,
+    chart_png: bytes,
+    metrics: dict,
+    pdf_titel: str = '',
+    pdf_beschreibung: str = '',
+) -> bytes:
     """Erstellt ein A4-Querformat-PDF mit Diagramm und Kenngrößen-Tabelle."""
     buf       = io.BytesIO()
     page      = landscape(A4)          # 297 × 210 mm
@@ -873,12 +879,17 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
     usable_w  = (page[0] - 2 * margin) * 0.90   # 267 mm × 90 %
     usable_h  = (page[1] - 2 * margin) * 0.90   # 180 mm × 90 %
 
+    _titel_text  = pdf_titel.strip() or f"Messdaten-Auswertung – {filename}"
+    _beschr_text = pdf_beschreibung.strip()
+    _hat_beschr  = bool(_beschr_text)
+
     # --- feste Höhen der Elemente (empirisch gemessen via afterFlowable-Tracking) ---
     # ReportLab SimpleDocTemplate hat ~2.12 mm internen Overhead (LCActionFlowable = 6 pt).
     # Paragraph mit leading=9pt belegt exakt 9 pt = 3.175 mm (nicht 4 mm!).
     # Deshalb: frame_available = usable_h - 2.117mm (interner RL-Overhead)
     _RL_OVERHEAD = 2.117 * mm   # ReportLab-interner LCActionFlowable-Abstand
-    HDR_H     = 6    * mm       # Kopfzeile (Table, rowHeight fix gesetzt)
+    HDR_H     = 6    * mm       # Kopfzeile Titelzeile
+    DESC_H    = 4    * mm if _hat_beschr else 0   # Beschreibungszeile (optional)
     LBL_ROW_H = 4.5  * mm       # Tabelle: Label-Zeile
     VAL_ROW_H = 6    * mm       # Tabelle: Wert-Zeile
     TBL_H     = LBL_ROW_H + VAL_ROW_H   # 10.5 mm pro Tabellenblock
@@ -902,12 +913,8 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
     n_gruppen  = len(gruppen)
     tabellen_h = n_gruppen * TBL_H + (n_gruppen - 1) * GAP
 
-    # Nutzbarer Frame nach Header:
-    # frame_start = usable_h - _RL_OVERHEAD
-    # nach HDR: frame_start - HDR_H  ← hier beginnt das Bild
-    frame_after_par = usable_h - _RL_OVERHEAD - HDR_H
-    # Bild endet bei: frame_after_par - chart_h
-    # danach: GAP + tabellen_h, muss noch >= 0 sein (bottomMargin schon in usable_h)
+    # Nutzbarer Frame nach Header (Titel + optionale Beschreibung):
+    frame_after_par = usable_h - _RL_OVERHEAD - HDR_H - DESC_H
     chart_h = max(55 * mm, frame_after_par - GAP - tabellen_h)
 
     doc = SimpleDocTemplate(
@@ -927,21 +934,32 @@ def build_pdf(filename: str, chart_png: bytes, metrics: dict) -> bytes:
         fontSize=8, textColor=colors.HexColor('#666666'),
         fontName='Helvetica', alignment=2, leading=10,
     )
-
-    dt_now = datetime.datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
-    header_tbl = Table(
-        [[Paragraph(f"Messdaten-Auswertung – {filename}", title_style),
-          Paragraph(dt_now, ts_style)]],
-        colWidths=[usable_w * 0.75, usable_w * 0.25],
-        rowHeights=[HDR_H],
+    desc_style = ParagraphStyle(
+        'ExportDesc', parent=styles['Normal'],
+        fontSize=8, textColor=colors.HexColor('#555555'),
+        fontName='Helvetica-Oblique', leading=10,
     )
-    header_tbl.setStyle(TableStyle([
+
+    dt_now   = datetime.datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
+    _hdr_data    = [[Paragraph(_titel_text, title_style), Paragraph(dt_now, ts_style)]]
+    _hdr_heights = [HDR_H]
+    _hdr_ts_cmds = [
         ('VALIGN',       (0, 0), (-1, -1), 'MIDDLE'),
         ('LEFTPADDING',  (0, 0), (-1, -1), 0),
         ('RIGHTPADDING', (0, 0), (-1, -1), 0),
         ('TOPPADDING',   (0, 0), (-1, -1), 0),
         ('BOTTOMPADDING',(0, 0), (-1, -1), 0),
-    ]))
+    ]
+    if _hat_beschr:
+        _hdr_data.append([Paragraph(_beschr_text, desc_style), ''])
+        _hdr_heights.append(DESC_H)
+        _hdr_ts_cmds.append(('SPAN', (0, 1), (1, 1)))
+    header_tbl = Table(
+        _hdr_data,
+        colWidths=[usable_w * 0.75, usable_w * 0.25],
+        rowHeights=_hdr_heights,
+    )
+    header_tbl.setStyle(TableStyle(_hdr_ts_cmds))
 
     def _make_kenngroessen_tabelle(zeilen_items):
         cw  = [usable_w / COLS_PER_ROW] * COLS_PER_ROW

@@ -5,13 +5,37 @@ Kein Streamlit – nur Python/NumPy/Pandas/SciPy.
 """
 from __future__ import annotations
 import io
+import json
 import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+# ---------------------------------------------------------------------------
+# CSX – CSV mit eingebetteten JSON-Einstellungen
+# ---------------------------------------------------------------------------
+_CSX_MARKER_BEGIN = b"###CSX_SETTINGS_BEGIN###"
+_CSX_MARKER_END   = b"###CSX_SETTINGS_END###"
+
+
+def split_csx(file_bytes: bytes) -> tuple[bytes, dict | None]:
+    idx = file_bytes.find(_CSX_MARKER_BEGIN)
+    if idx == -1:
+        return file_bytes, None
+    raw = file_bytes[:idx].rstrip(b"\n").rstrip(b"\r\n")
+    json_start = idx + len(_CSX_MARKER_BEGIN)
+    json_end   = file_bytes.find(_CSX_MARKER_END, json_start)
+    json_bytes = file_bytes[json_start:json_end].strip()
+    try:
+        return raw, json.loads(json_bytes)
+    except Exception:
+        return raw, None
+
 
 # Polynomgrad für alle Savitzky-Golay-Filter
 SAVGOL_POLYNOM = 3
+
+# Iterationen des k-Means-Schwellwert-Finders im Rechteck-Fit
+_RECHTECK_K_MEANS_ITER = 5
 
 
 # ===========================================================================
@@ -409,6 +433,74 @@ def read_oszilloskop_csv(
         result_df[name] = df.iloc[:, i + 1].values.astype(float) * skale
 
     return result_df, hz_faktor
+
+
+# ===========================================================================
+# RECHTECK-FIT (Huberkennung)
+# ===========================================================================
+
+def berechne_rechteck_fit(
+    zeit: np.ndarray,
+    signal: np.ndarray,
+) -> dict | None:
+    """Iterativer k-Means-Schwellwert-Finder für verrauschte Rechtecksignale.
+
+    Gibt dict mit 'runs', 'y_low', 'y_high' zurück oder None wenn kein
+    Rechteck erkennbar ist. Runs: Liste von {'t_start', 't_end'}-Pulsen.
+    """
+    if len(signal) == 0:
+        return None
+    valid = ~np.isnan(signal)
+    if not np.any(valid):
+        return None
+    signal = signal[valid]
+    zeit   = zeit[valid]
+
+    min_val = float(np.nanpercentile(signal, 5))
+    max_val = float(np.nanpercentile(signal, 95))
+    if max_val <= min_val:
+        return None
+
+    threshold  = 0.5 * (min_val + max_val)
+    low_center = min_val
+
+    for _ in range(_RECHTECK_K_MEANS_ITER):
+        high_mask = signal >= threshold
+        low_mask  = signal < threshold
+        if not np.any(high_mask) or not np.any(low_mask):
+            break
+        new_low  = float(np.median(signal[low_mask]))
+        new_high = float(np.median(signal[high_mask]))
+        if new_high <= new_low:
+            break
+        new_threshold = 0.5 * (new_low + new_high)
+        low_center = new_low
+        if np.isclose(new_threshold, threshold):
+            threshold = new_threshold
+            break
+        threshold = new_threshold
+
+    high_mask = signal >= threshold
+    low_mask  = signal < threshold
+    if not np.any(high_mask) or not np.any(low_mask):
+        return None
+
+    runs: list[dict] = []
+    start = 0
+    while start < len(high_mask):
+        if high_mask[start]:
+            end = start
+            while end < len(high_mask) and high_mask[end]:
+                end += 1
+            runs.append({'t_start': float(zeit[start]), 't_end': float(zeit[end - 1])})
+            start = end
+        else:
+            start += 1
+
+    if not runs:
+        return None
+    high_center = float(np.median(signal[signal >= threshold]))
+    return {'runs': runs, 'y_low': low_center, 'y_high': high_center}
 
 
 # ===========================================================================
