@@ -150,6 +150,8 @@ _EINSTELLUNGEN_DEFAULTS: dict = {
     'export_wert_auswahl': [],
     'pdf_titel': '',
     'pdf_beschreibung': '',
+    'crop_start': None,
+    'crop_end': None,
     'x_rel_mode': False,
     'active_sensor_name': '',
 }
@@ -179,8 +181,6 @@ _RUNTIME_DEFAULTS: dict = {
     'last_file_name': None,
     'window_length_sw': 30,
     'window_length_accel_sw': 40,
-    'crop_start': None,
-    'crop_end': None,
     'zeit_hz_faktor': 1000.0,
     'n_kanäle_datei': N_KANÄLE,
     'sub_dateityp':   True,
@@ -778,7 +778,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 total_time_ms = float(df_raw['Zeit (ms)'].iloc[-1])
             else:
                 total_time_ms = len(df_raw) / sample_rate * _hz_f_init
-            # Bei CSX-Dateien Cursor/Offsets NICHT zurücksetzen – kommen aus den eingebetteten Einstellungen
+            # Bei CSX-Dateien Cursor/Offsets/Crop NICHT zurücksetzen – kommen aus eingebetteten Einstellungen
             if not st.session_state.pop('_csx_settings_loaded', False):
                 for i in range(1, N_KANÄLE + 1):
                     st.session_state[f'off{i}']        = 0.0
@@ -786,8 +786,8 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 for _i in range(1, N_KANÄLE + 1):
                     st.session_state[f'show_ch{_i}'] = True
                 _setze_cursor_position(total_time_ms)
-            st.session_state.crop_start     = None
-            st.session_state.crop_end       = None
+                st.session_state.crop_start = None
+                st.session_state.crop_end   = None
             st.session_state.zoom_token    += 1
             st.session_state.last_file_name = uploaded_file.name
             st.session_state.einstellungen  = False
@@ -1198,16 +1198,6 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
                   key="yb_sw", label_visibility="collapsed",
                   help="Horizontale Hilfslinie YB (obere Referenz).")
 
-show_integral = st.sidebar.toggle(
-    f"∫{active_sensor} dt im Diagramm", key="show_integral",
-    help="Zeichnet die Fläche unter dem aktiven Kanal zwischen XA und XB transparent ein (Integralbereich).",
-)
-show_integral_curve = False
-if show_integral:
-    show_integral_curve = st.sidebar.toggle(
-        f"∫{active_sensor} dt Verlauf", key="show_integral_curve",
-        help="Zeichnet den kumulativen Integralverlauf zwischen XA und XB auf einer eigenen Y-Achse (Startwert 0 bei XA).",
-    )
 show_velocity = st.sidebar.toggle(
     f"d {active_sensor} /dt anzeigen", key="show_velocity",
     help="Zeigt die 1. Ableitung (Geschwindigkeit) des aktiven Kanals auf einer zweiten Y-Achse.",
@@ -1228,7 +1218,6 @@ if show_acceleration:
         key="window_length_accel_sw", on_change=_on_window_length_accel_cb,
         help="Fenstergröße des Savitzky-Golay-Filters für die 2. Ableitung. Größere Werte nötig, da die 2. Ableitung stärker rauscht.",
     )
-
 show_sop = st.sidebar.toggle(
     "Speed on Point (SOP)", key="show_sop",
     help="Zeigt die Geschwindigkeit an der steigenden Flanke des Rechtecksignals an einem einstellbaren Hub. Erfordert erkanntes Rechteck-Fit.",
@@ -1238,6 +1227,17 @@ if show_sop:
         "SOP Pegel (%)", 0, 100, step=1,
         key="sop_percent",
         help="Höhe auf der steigenden Flanke in Prozent des Hub (0 % = unterer Pegel, 100 % = oberer Pegel).",
+    )
+
+show_integral = st.sidebar.toggle(
+    f"∫{active_sensor} dt im Diagramm", key="show_integral",
+    help="Zeichnet die Fläche unter dem aktiven Kanal zwischen XA und XB transparent ein (Integralbereich).",
+)
+show_integral_curve = False
+if show_integral:
+    show_integral_curve = st.sidebar.toggle(
+        f"∫{active_sensor} dt Verlauf", key="show_integral_curve",
+        help="Zeichnet den kumulativen Integralverlauf zwischen XA und XB auf einer eigenen Y-Achse (Startwert 0 bei XA).",
     )
 
 show_multi_kanal = st.sidebar.toggle(
@@ -1453,6 +1453,10 @@ if idx_end > idx_start:
         has_amax_rising = True
 
 # --- Längen-Autoscale: v/a Einheit auf 10–9999 Bereich anpassen ---
+# ZWEIPHASIG: _ableit_info liefert v_faktor=1.0 für Längeneinheiten (Rohwert in einheit/s).
+# Dieser Block wählt die beste Anzeigeeinheit (nm/µm/mm/m) und überschreibt v_faktor/a_faktor
+# mit dem Skalierungsfaktor. Alle Folgenutzer (Z1481 SOP, Z1506 Plotly, Z2066 Export)
+# erhalten damit direkt anzeigerichtige Werte – ohne zweiten Multiplikationsschritt.
 if _aktiv_einheit in _LAENGE_EINHEITEN:
     # Referenzwert in kanal_einheit/s (v_faktor=1 für Längen, Werte direkt nutzbar)
     _v_ref = max(abs(v_max) if not np.isnan(v_max) else 0.0,
@@ -1909,9 +1913,9 @@ metrics = {
     # 1. Ableitung (Cursor-basierte Werte immer vorhanden)
     f"d {active_sensor} /dt (A-B)":   _fmt_val(v_avg, v_einheit),
     f"Δd {active_sensor} /dt (A-B)":  _fmt_val(v_cursor_delta, v_einheit)   if not np.isnan(v_cursor_delta) else "N/A",
-    # Integral
-    f"∫ {active_sensor} dt (A-B)":  _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit),
 }
+if show_integral:
+    metrics[f"∫ {active_sensor} dt (A-B)"] = _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit)
 # SG-Peak-Werte wenn Marker aktiv (unabhängig von d/dt-Linie)
 if has_vmax and mark_vmax:
     metrics[f"d {active_sensor} /dt max"] = _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A"
@@ -1972,13 +1976,15 @@ _exp_mit_werten = st.sidebar.toggle(
 
 if _exp_mit_werten and _exp_ist_diagramm:
     _alle_metrik_keys = list(metrics.keys())
+    # Stale Keys (z.B. Integral nach Deaktivierung) aus gespeicherter Auswahl entfernen.
+    # default= wird bei key=-Widgets in Re-Renders ignoriert – daher direkt session_state setzen.
     _vorauswahl = [k for k in st.session_state.get('export_wert_auswahl', [])
                    if k in _alle_metrik_keys]
     if not _vorauswahl:
         _vorauswahl = _alle_metrik_keys
+    st.session_state['export_wert_auswahl'] = _vorauswahl
     st.sidebar.multiselect(
         "Exportierte Werte", _alle_metrik_keys,
-        default=_vorauswahl,
         key="export_wert_auswahl",
         help="Welche Messwerte sollen exportiert werden?",
     )
