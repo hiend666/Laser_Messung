@@ -9,20 +9,43 @@ exportiert Ergebnisse als PDF oder PNG.
 import io
 import json
 import math
+import pathlib
+import sys
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 
+# Prefer the local project modules over any globally installed copies.
+_APP_ROOT = pathlib.Path(__file__).resolve().parent
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
+
+for _mod_name in ('chart', 'reader'):
+    sys.modules.pop(_mod_name, None)
+
 import reader
-from chart import (
-    KANAL_FARBEN, FARBE_D, FARBE_D2, FARBE_V_SCHNITT,
-    FARBE_VMAX, FARBE_AMAX, FARBE_CURSOR,
-    _ZEIT_TO_S, _ableit_info, _laenge_autoscale, _LAENGE_EINHEITEN, _yachsen_layout,
-    _zeichne_rechteck_fit, _zeichne_integral_flaeche, _finde_sop_kreuzungen,
-    _baue_traces, build_chart_png, build_pdf,
-)
+import chart as chart_module
+
+KANAL_FARBEN = chart_module.KANAL_FARBEN
+FARBE_D = chart_module.FARBE_D
+FARBE_D2 = chart_module.FARBE_D2
+FARBE_V_SCHNITT = chart_module.FARBE_V_SCHNITT
+FARBE_VMAX = chart_module.FARBE_VMAX
+FARBE_AMAX = chart_module.FARBE_AMAX
+FARBE_CURSOR = chart_module.FARBE_CURSOR
+_ZEIT_TO_S = chart_module._ZEIT_TO_S
+_ableit_info = chart_module._ableit_info
+_laenge_autoscale = chart_module._laenge_autoscale
+_LAENGE_EINHEITEN = chart_module._LAENGE_EINHEITEN
+_yachsen_layout = chart_module._yachsen_layout
+_zeichne_rechteck_fit = chart_module._zeichne_rechteck_fit
+_zeichne_integral_flaeche = chart_module._zeichne_integral_flaeche
+_finde_sop_kreuzungen = chart_module._finde_sop_kreuzungen
+_baue_traces = chart_module._baue_traces
+build_chart_png = chart_module.build_chart_png
+build_pdf = chart_module.build_pdf
 
 VERSION = "v1.01.13"
 
@@ -225,7 +248,23 @@ def _detect_kanal_count_cached(file_bytes: bytes, file_type: str, skip_rows: int
 
 @st.cache_data
 def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
-    return reader.berechne_rechteck_fit(zeit, signal)
+    try:
+        if hasattr(reader, 'berechne_rechteck_fit'):
+            return reader.berechne_rechteck_fit(zeit, signal)
+    except Exception:
+        pass
+    try:
+        import importlib.util
+        import pathlib
+        rp = pathlib.Path(__file__).parent / 'reader.py'
+        spec = importlib.util.spec_from_file_location('reader_local', str(rp))
+        if spec is None or spec.loader is None:
+            raise ImportError('Could not load reader.py spec')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.berechne_rechteck_fit(zeit, signal)
+    except Exception:
+        return None
 
 
 @st.cache_data
@@ -491,7 +530,46 @@ _SUB_EXPANDER_CBS = {k: _make_sub_expander_cb(k) for k in _SUB_EXPANDER_KEYS}
 
 def _get_raw_bytes(f) -> bytes:
     """Gibt Datei-Bytes zurück – bei CSX-Dateien ohne den eingebetteten Settings-Block."""
-    raw, _ = reader.split_csx(f.getvalue())
+    # Akzeptiere verschiedene Upload-Objekte (`UploadedFile`, BytesIO, str, bytes)
+    def _ensure_bytes(obj) -> bytes:
+        if obj is None:
+            return b""
+        if isinstance(obj, bytes):
+            return obj
+        if isinstance(obj, str):
+            return obj.encode('utf-8')
+        if hasattr(obj, 'getvalue'):
+            v = obj.getvalue()
+            return v if isinstance(v, bytes) else str(v).encode('utf-8')
+        if hasattr(obj, 'read'):
+            v = obj.read()
+            return v if isinstance(v, bytes) else str(v).encode('utf-8')
+        return str(obj).encode('utf-8')
+
+    def _load_split_csx_module():
+        try:
+            if hasattr(reader, 'split_csx'):
+                return reader
+        except Exception:
+            pass
+        try:
+            import importlib.util
+            import pathlib
+            rp = pathlib.Path(__file__).parent / 'reader.py'
+            spec = importlib.util.spec_from_file_location('reader_local', str(rp))
+            if spec is None or spec.loader is None:
+                raise ImportError('Could not load reader.py spec')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, 'split_csx'):
+                return module
+        except Exception:
+            pass
+        raise AttributeError("reader module has no attribute 'split_csx'")
+
+    fb = _ensure_bytes(f)
+    split_reader = _load_split_csx_module()
+    raw, _ = split_reader.split_csx(fb)
     return raw
 
 
@@ -509,7 +587,29 @@ def on_file_upload():
         # CSX: eingebettete Einstellungen automatisch anwenden (nur beim ersten Upload)
         if (f.name.lower().endswith('.csx')
                 and st.session_state.get('last_file_name') != f.name):
-            _, _csx_cfg = reader.split_csx(f.getvalue())
+            try:
+                fb = f.getvalue()
+            except Exception:
+                try:
+                    fb = f.read()
+                except Exception:
+                    fb = f
+            if isinstance(fb, str):
+                fb = fb.encode('utf-8')
+            try:
+                _, _csx_cfg = reader.split_csx(fb)
+            except AttributeError:
+                # Fallback: lade reader.py direkt aus dem Arbeitsverzeichnis
+                try:
+                    import importlib.util
+                    import pathlib
+                    rp = pathlib.Path(__file__).parent / 'reader.py'
+                    spec = importlib.util.spec_from_file_location('reader_local', str(rp))
+                    reader_local = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(reader_local)
+                    _, _csx_cfg = reader_local.split_csx(fb)
+                except Exception:
+                    _, _csx_cfg = None, None
             if _csx_cfg:
                 for _k, _v in _csx_cfg.items():
                     if _k in EINSTELLUNGEN_KEYS:
