@@ -537,7 +537,11 @@ def _baue_traces(
     Wird sowohl vom interaktiven Diagramm (app.py) als auch vom PNG-Export
     (build_chart_png) aufgerufen – identische Darstellung in beiden Fällen.
     """
-    for name in sensor_namen:
+    # Aktiven Kanal zuletzt zeichnen, damit er nicht von anderen Linien verdeckt wird
+    _draw_order = [n for n in sensor_namen if n != active_sensor]
+    if active_sensor in sensor_namen:
+        _draw_order.append(active_sensor)
+    for name in _draw_order:
         _ci = alle_sensor_namen.index(name) if name in alle_sensor_namen else 0
         fig.add_trace(go.Scatter(
             x=df_plot['Zeit (ms)'], y=df_plot[name],

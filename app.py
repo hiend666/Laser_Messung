@@ -24,7 +24,7 @@ from chart import (
     _baue_traces, build_chart_png, build_pdf,
 )
 
-VERSION = "v1.01.12"
+VERSION = "v1.01.13"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
