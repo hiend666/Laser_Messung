@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.02.01"
+VERSION = "v1.02.02"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -1837,7 +1837,9 @@ fig.update_layout(
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
     uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}-{active_sensor}",
-    xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
+    xaxis=dict(autorange=True,
+               rangemode='normal' if t_offset != 0.0 else 'nonnegative',
+               domain=[0, x_domain_end],
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
 )
