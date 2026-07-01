@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.02.00"
+VERSION = "v1.02.01"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -167,6 +167,7 @@ _EINSTELLUNGEN_DEFAULTS: dict = {
     'crop_start': None,
     'crop_end': None,
     'x_rel_mode': False,
+    'x_rel_offset': 0.0,
     'active_sensor_name': '',
 }
 for _i in range(1, N_KANÄLE + 1):
@@ -322,6 +323,15 @@ def _on_window_length_cb():
 
 def _on_window_length_accel_cb():
     st.session_state['window_length_accel'] = st.session_state['window_length_accel_sw']
+
+def _on_x_rel_mode_change():
+    """Friert den Nullpunkt ein wenn Start@0 aktiviert wird; löscht ihn beim Deaktivieren."""
+    if st.session_state.get('x_rel_mode', False):
+        _xa = float(st.session_state.get('xa', 0.0))
+        _xb = float(st.session_state.get('xb', 0.001))
+        st.session_state['x_rel_offset'] = min(_xa, _xb)
+    else:
+        st.session_state['x_rel_offset'] = 0.0
 
 def _on_fein_toggle():
     """Beim Stufenwechsel: freie Off-Keys in Widget-Keys übernehmen,
@@ -1196,8 +1206,9 @@ xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
 st.session_state.xa = xa
 st.session_state.xb = xb
 
-# Relative Zeitachse: Nullpunkt = linker Cursor (min der beiden Slider-Positionen)
-t_offset = min(xa, xb) if st.session_state.get('x_rel_mode', False) else 0.0
+# Relative Zeitachse: Nullpunkt = eingefrorener Offset (gesetzt beim Aktivieren von Start@0).
+# Nicht live aus min(xa,xb) berechnen – das erzeugt einen Zirkelbezug wenn der Cursor bewegt wird.
+t_offset = float(st.session_state.get('x_rel_offset', 0.0)) if st.session_state.get('x_rel_mode', False) else 0.0
 st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen diesen Wert
 
 # xa_sw/xb_sw müssen VOR dem Widget-Rendering gesetzt werden, weil x_rel_mode
@@ -1897,8 +1908,8 @@ crop_t1 = min(max_zeit, max(xa, xb) + margin)
 
 btn_col0, btn_col1, btn_col2 = st.columns([1, 3, 4])
 with btn_col0:
-    st.toggle(" ", key="x_rel_mode",
-              help="Start @ 0 – Relative Zeitachse: linker Rand = 0. Slider und Anzeige arbeiten in relativer Zeit.")
+    st.toggle(" ", key="x_rel_mode", on_change=_on_x_rel_mode_change,
+              help="Start @ 0 – Relative Zeitachse: XA-Position beim Aktivieren wird als Nullpunkt eingefroren. Deaktivieren und neu aktivieren setzt den Nullpunkt auf die aktuelle XA-Position.")
 with btn_col1:
     if st.button("✂️ Crop A–B  (+15%)", disabled=(dt_val_ms == 0), width="stretch",
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
