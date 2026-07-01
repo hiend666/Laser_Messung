@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.02.02"
+VERSION = "v1.02.03"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -302,7 +302,7 @@ def _make_cursor_cb(cursor: str, source: str):
     to_key   = nw_key if source == 'slider' else sw_key
     def _cb():
         t_off = float(st.session_state.get('_t_offset', 0.0))
-        val_rel = max(0.0, float(st.session_state[from_key]))
+        val_rel = float(st.session_state[from_key])
         st.session_state[cursor] = round(val_rel + t_off, 3)
         st.session_state[to_key] = val_rel
     return _cb
