@@ -72,7 +72,7 @@ def wahl_zeiteinheit(max_s: float) -> tuple[float, str]:
 # ===========================================================================
 
 def clamp_savgol_fenster(fenster: int, n: int) -> int:
-    """Klemmt SG-Fenstergröße auf gültigen Wert (ungerade, ≥ 5, < n)."""
+    """Klemmt SG-Fenstergröße auf gültigen Wert (ungerade, < n). Mindestgröße ≥ 5 liegt beim Aufrufer."""
     if fenster >= n:
         fenster = n if n % 2 == 1 else n - 1
     if fenster % 2 == 0:
@@ -594,7 +594,7 @@ def build_display_df(
     übernommen und die Samplerate daraus abgeleitet.
     Für 'CSV plain' wird die Zeitachse über build_time_axis() erzeugt.
 
-    zeit_hz_faktor: Umrechnungsfaktor Anzeigeeinheit → Hz (z.B. 1e6 für µs).
+    zeit_hz_faktor: Anzeigeeinheiten pro Sekunde (z.B. 1000 für ms, 1000000 für µs); sample_rate_hz = zeit_hz_faktor / dt.
     Gibt (df_full, tatsächliche_samplerate_hz) zurück.
     """
     if file_type in ("Hubmessung", "Oszilloskop CSV"):

@@ -22,32 +22,23 @@ _APP_ROOT = pathlib.Path(__file__).resolve().parent
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
-for _mod_name in ('chart', 'reader'):
-    sys.modules.pop(_mod_name, None)
-
 import reader
 import chart as chart_module
 
 KANAL_FARBEN = chart_module.KANAL_FARBEN
-FARBE_D = chart_module.FARBE_D
-FARBE_D2 = chart_module.FARBE_D2
-FARBE_V_SCHNITT = chart_module.FARBE_V_SCHNITT
-FARBE_VMAX = chart_module.FARBE_VMAX
-FARBE_AMAX = chart_module.FARBE_AMAX
 FARBE_CURSOR = chart_module.FARBE_CURSOR
 _ZEIT_TO_S = chart_module._ZEIT_TO_S
 _ableit_info = chart_module._ableit_info
 _laenge_autoscale = chart_module._laenge_autoscale
 _LAENGE_EINHEITEN = chart_module._LAENGE_EINHEITEN
 _yachsen_layout = chart_module._yachsen_layout
-_zeichne_rechteck_fit = chart_module._zeichne_rechteck_fit
 _zeichne_integral_flaeche = chart_module._zeichne_integral_flaeche
 _finde_sop_kreuzungen = chart_module._finde_sop_kreuzungen
 _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.01.13"
+VERSION = "v1.02.00"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -249,21 +240,9 @@ def _detect_kanal_count_cached(file_bytes: bytes, file_type: str, skip_rows: int
 @st.cache_data
 def compute_best_fit_rectangle(zeit: np.ndarray, signal: np.ndarray):
     try:
-        if hasattr(reader, 'berechne_rechteck_fit'):
-            return reader.berechne_rechteck_fit(zeit, signal)
-    except Exception:
-        pass
-    try:
-        import importlib.util
-        import pathlib
-        rp = pathlib.Path(__file__).parent / 'reader.py'
-        spec = importlib.util.spec_from_file_location('reader_local', str(rp))
-        if spec is None or spec.loader is None:
-            raise ImportError('Could not load reader.py spec')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.berechne_rechteck_fit(zeit, signal)
-    except Exception:
+        return reader.berechne_rechteck_fit(zeit, signal)
+    except Exception as exc:
+        st.sidebar.warning(f"Rechteck-Fit fehlgeschlagen: {exc}")
         return None
 
 
@@ -299,7 +278,7 @@ def _apply_sg_vorfilter_cached(
 ) -> pd.DataFrame:
     """Filtert Rohkanäle vor Y-Offset-Anwendung. Cache-Miss nur bei Daten- oder Parameteränderung."""
     if not any(en for en, _ in sg_params):
-        return df_raw
+        return df_raw.copy()
     df = df_raw.copy()
     for name, (en, win) in zip(kanal_namen, sg_params):
         if en and name in df.columns:
@@ -858,8 +837,10 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             st.stop()
 
         sensor_namen = list(kanal_namen_tuple)
+        # Index über _sensor_ch_num[name] statt Listenposition i+1 – sonst verschieben sich
+        # die Settings, sobald ein früherer Kanal-Slot leer gelassen wird (dokumentiertes Feature).
         _osc_skale_tuple = tuple(
-            st.session_state[f'osc_skale_{i+1}'] for i in range(len(kanal_namen_tuple))
+            st.session_state[f'osc_skale_{_sensor_ch_num[name]}'] for name in kanal_namen_tuple
         )
 
         try:
@@ -908,8 +889,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 key='off_kanal_sel',
                 label_visibility="collapsed",
             )
-            _off_ki = sensor_namen.index(_off_kanal)   # 0-basiert
-            _off_kn = _off_ki + 1                       # 1-basiert (Key-Nummer)
+            _off_kn = _sensor_ch_num[_off_kanal]   # tatsächliche Slot-Nummer (nicht Listenposition)
 
             # Zeitachse für df_raw aufbauen (Vibrometer hat keine 'Zeit (ms)'-Spalte)
             _xa_off   = float(st.session_state.get('xa', 0.0))
@@ -983,7 +963,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 _off_kanal,
                 min_value=-_off_lim, max_value=_off_lim,
                 step=_off_step, format=_off_fmt,
-                key=f'off{_off_kn}_slider', on_change=OFF_CALLBACKS[_off_ki],
+                key=f'off{_off_kn}_slider', on_change=OFF_CALLBACKS[_off_kn - 1],
                 label_visibility="collapsed",
             )
 
@@ -994,11 +974,11 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 help=f"Schrittweite des X-Offsets in {_zeit_einheit}.",
             )
             _x_off_step = _FEIN_SCHRITT.get(st.session_state.get('x_off_fein_stufe', '0,1'), 0.1)
-            for _xi, _xname in enumerate(sensor_namen):
+            for _xname in sensor_namen:
                 st.number_input(
                     f"X-Offset {_xname} ({_zeit_einheit})",
                     step=_x_off_step, format="%.3f",
-                    key=f'x_off{_xi+1}',
+                    key=f'x_off{_sensor_ch_num[_xname]}',
                     help=f"Zeitversatz in {_zeit_einheit} – verschiebt diesen Kanal nach links (−) oder rechts (+).",
                 )
 
@@ -1022,19 +1002,19 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                               key=f'ch{_i}_ymax', label_visibility="collapsed")
             _grenz_hat_inhalt = True
         if st.session_state.get('show_velocity', False):
-            st.caption("dIN1/dt")
+            st.caption("Geschwindigkeit (v)")
             _vc1, _vc2 = st.columns(2)
-            _vc1.number_input("min dIN1/dt", step=100.0, format="%.0f",
+            _vc1.number_input("min v", step=100.0, format="%.0f",
                               key="v_axis_min", label_visibility="collapsed")
-            _vc2.number_input("max dIN1/dt", step=100.0, format="%.0f",
+            _vc2.number_input("max v", step=100.0, format="%.0f",
                               key="v_axis_max", label_visibility="collapsed")
             _grenz_hat_inhalt = True
         if st.session_state.get('show_acceleration', False):
-            st.caption("d²IN1/dt²")
+            st.caption("Beschleunigung (a)")
             _ac1, _ac2 = st.columns(2)
-            _ac1.number_input("min d²IN1/dt²", step=500.0, format="%.0f",
+            _ac1.number_input("min a", step=500.0, format="%.0f",
                               key="a_axis_min", label_visibility="collapsed")
-            _ac2.number_input("max d²IN1/dt²", step=500.0, format="%.0f",
+            _ac2.number_input("max a", step=500.0, format="%.0f",
                               key="a_axis_max", label_visibility="collapsed")
             _grenz_hat_inhalt = True
         if st.session_state.get('show_integral_curve', False):
@@ -1096,10 +1076,11 @@ if not uploaded_file:
 # KANAL-KONFIGURATION – aktive Kanäle aus Einstellungen ableiten
 # ---------------------------------------------------------------------------
 
+# _sensor_ch_num nutzen statt _kanal_cfg iterieren – verhindert, dass ein doppelter Kanalname
+# aus einem alten Session-State-Slot die Einheit des aktiven Kanals überschreibt.
 kanal_einheit_map = {
-    nm: st.session_state.get(f'ch{i}_einheit', 'µm')
-    for i, nm in enumerate(_kanal_cfg, 1)
-    if nm
+    nm: st.session_state.get(f'ch{slot}_einheit', 'µm')
+    for nm, slot in _sensor_ch_num.items()
 }
 
 if len(kanal_namen_tuple) < 1:
@@ -1110,16 +1091,18 @@ if len(kanal_namen_tuple) < 1:
 # DATENAUFBEREITUNG
 # ---------------------------------------------------------------------------
 
-offs = tuple(float(st.session_state.get(f'off{i+1}', 0.0)) for i in range(len(sensor_namen)))
+# Index über _sensor_ch_num[name] statt Listenposition i+1 – siehe Kommentar bei _osc_skale_tuple.
+offs = tuple(float(st.session_state.get(f'off{_sensor_ch_num[name]}', 0.0)) for name in sensor_namen)
 
 _hz_faktor    = st.session_state.get('zeit_hz_faktor', 1000.0)
 _zeit_einheit = _ZEIT_HZ_ZU_EINHEIT.get(round(_hz_faktor), 'ms')
 
 # SG-VORFILTER auf Rohkanäle – VOR Y-Offset, damit der Offset auf geglätteten Werten liegt
+# Index über _sensor_ch_num[name] statt Listenposition – siehe Kommentar bei _osc_skale_tuple.
 _sg_params = tuple(
-    (bool(st.session_state.get(f'ch{i}_sg_en', False)),
-     int(st.session_state.get(f'ch{i}_sg_win', 5)))
-    for i in range(1, len(sensor_namen) + 1)
+    (bool(st.session_state.get(f'ch{_sensor_ch_num[name]}_sg_en', False)),
+     int(st.session_state.get(f'ch{_sensor_ch_num[name]}_sg_win', 5)))
+    for name in sensor_namen
 )
 _df_raw_filt = _apply_sg_vorfilter_cached(df_raw, kanal_namen_tuple, _sg_params)
 
@@ -1133,7 +1116,8 @@ df_full, sample_rate = _build_display_df_cached(
 # RAW → [scale + Y-offset] = df_full  →  [X-shift] = df_use  →  [Crop] = df
 # ---------------------------------------------------------------------------
 
-_x_offs = [float(st.session_state.get(f'x_off{i+1}', 0.0)) for i in range(len(sensor_namen))]
+# Index über _sensor_ch_num[name] statt Listenposition – siehe Kommentar bei _osc_skale_tuple.
+_x_offs = [float(st.session_state.get(f'x_off{_sensor_ch_num[name]}', 0.0)) for name in sensor_namen]
 if any(v != 0.0 for v in _x_offs) and len(df_full) > 1:
     _dt_ms = float(df_full['Zeit (ms)'].iloc[1] - df_full['Zeit (ms)'].iloc[0])
     df_use = df_full.copy()
@@ -1264,7 +1248,7 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     st.divider()
     st.caption("Diagrammlinien")
     show_v_avg       = st.toggle("Schnittlinie A–B", key="show_v_avg",
-                                 help="Verbindungslinie von XA nach XB – zeigt die mittlere Änderungsrate dIN1/dt (A-B).")
+                                 help="Verbindungslinie von XA nach XB – zeigt die mittlere Änderungsrate des aktiven Kanals zwischen A und B.")
     show_rect_fit_top = st.toggle("Rechteck-Fit Top/Bot.", key="show_rect_fit_top",
                                   help="Obere und untere gestrichelte Linie des Rechteck-Fits einzeichnen.")
     show_rect_fit    = st.toggle("Rechteck-Fit füllen", key="show_rect_fit",
@@ -1555,7 +1539,7 @@ if idx_end > idx_start:
 # --- Längen-Autoscale: v/a Einheit auf 10–9999 Bereich anpassen ---
 # ZWEIPHASIG: _ableit_info liefert v_faktor=1.0 für Längeneinheiten (Rohwert in einheit/s).
 # Dieser Block wählt die beste Anzeigeeinheit (nm/µm/mm/m) und überschreibt v_faktor/a_faktor
-# mit dem Skalierungsfaktor. Alle Folgenutzer (Z1481 SOP, Z1506 Plotly, Z2066 Export)
+# mit dem Skalierungsfaktor. Alle Folgenutzer (SOP, Plotly-Traces, Export)
 # erhalten damit direkt anzeigerichtige Werte – ohne zweiten Multiplikationsschritt.
 if _aktiv_einheit in _LAENGE_EINHEITEN:
     # Referenzwert in kanal_einheit/s (v_faktor=1 für Längen, Werte direkt nutzbar)
@@ -1577,12 +1561,14 @@ if _aktiv_einheit in _LAENGE_EINHEITEN:
     if _a_ref > 0:
         _a_disp_eu, _a_scale = _laenge_autoscale(_aktiv_einheit, _a_ref)
         a_einheit     = f'{_a_disp_eu}/s²'
-        a_faktor      = _a_scale ** 2     # SG-Rohwert (einheit/s²) → angezeigte Einheit/s²
-        a_max_falling = a_max_falling * (_a_scale ** 2) if not np.isnan(a_max_falling) else a_max_falling
-        a_min_rising  = a_min_rising  * (_a_scale ** 2) if not np.isnan(a_min_rising)  else a_min_rising
+        a_faktor      = _a_scale           # SG-Rohwert (einheit/s²) → angezeigte Einheit/s² (linear, /s² steckt bereits in delta=dt_s der SG-Ableitung)
+        a_max_falling = a_max_falling * _a_scale if not np.isnan(a_max_falling) else a_max_falling
+        a_min_rising  = a_min_rising  * _a_scale if not np.isnan(a_min_rising)  else a_min_rising
 
 if show_sop and rect_fit is not None:
-    _sg_v_sop = (sg_v_roh * v_faktor) if sg_v_roh is not None else None
+    # sg_v_roh_full (volle Länge = df_use) verwenden, nicht das crop-geslicte sg_v_roh –
+    # _finde_sop_kreuzungen und rect_fit arbeiten auf dem df_use-Index-Raum.
+    _sg_v_sop = (sg_v_roh_full * v_faktor) if sg_v_roh_full is not None else None
     sop_linien, v_sop = _finde_sop_kreuzungen(
         df_use['Zeit (ms)'].values,
         df_use[active_sensor].values,
@@ -1626,7 +1612,10 @@ if _y_full_prim is not None and not _y_full_prim.empty:
 else:
     y_max_plot = float(df_plot[_prim_namen].max().max())
     y_min_plot = float(df_plot[_prim_namen].min().min())
-y_range_plot = [y_min_plot, y_max_plot + (y_max_plot - y_min_plot) * Y_PUFFER]
+_y_span_plot = y_max_plot - y_min_plot
+if _y_span_plot == 0:  # Flaches Signal → Plotly würde Bereich ignorieren ohne Mindest-Span
+    _y_span_plot = max(abs(y_max_plot) * 0.1, 1.0)
+y_range_plot = [y_min_plot - _y_span_plot * 0.05, y_max_plot + _y_span_plot * Y_PUFFER]
 
 _yrange_fallback: dict[str, list] = {}
 for _e in set(kanal_einheit_map.get(n, 'µm') for n in sichtbare_sensor_namen):
@@ -1836,7 +1825,7 @@ fig.update_layout(
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}-{active_sensor}",
     xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
                showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
     **layout_yachsen,
@@ -1922,7 +1911,7 @@ with btn_col1:
         st.session_state.zoom_token += 1
         st.rerun()
 with btn_col2:
-    if st.button("🔍 Show All", disabled=not crop_active, width="stretch",
+    if st.button("🔍 Alles zeigen | Show All", disabled=not crop_active, width="stretch",
                  help="Setzt den Crop zurück und zeigt den gesamten Messzeitraum."):
         st.session_state.crop_start  = None
         st.session_state.crop_end    = None
@@ -2051,9 +2040,15 @@ _multi_diag_export = None
 if show_multi_diag and len(_mc_auswahl_diag) == 2:
     _mc_d0, _mc_d1 = _mc_auswahl_diag
     if _mc_d0 in df.columns and _mc_d1 in df.columns:
+        _t_md_all  = df['Zeit (ms)'].values - t_offset
+        _y_md_all  = df[_mc_d0].values * df[_mc_d1].values
+        # Auf XA–XB maskieren – identisch mit der Bildschirmansicht (app.py _mask_ab, Z~1858)
+        _mask_md   = (_t_md_all >= min(xa_c, xb_c)) & (_t_md_all <= max(xa_c, xb_c))
+        _t_md_exp  = _t_md_all[_mask_md] if np.any(_mask_md) else _t_md_all
+        _y_md_exp  = _y_md_all[_mask_md] if np.any(_mask_md) else _y_md_all
         _multi_diag_export = {
-            'x':      df['Zeit (ms)'].values - t_offset,
-            'y':      df[_mc_d0].values * df[_mc_d1].values,
+            'x':      _t_md_exp,
+            'y':      _y_md_exp,
             'einheit': _produkt_einheit(kanal_einheit_map.get(_mc_d0,'?'), kanal_einheit_map.get(_mc_d1,'?')),
             'label':  f"{_mc_d0}×{_mc_d1}",
             'ymin':   float(st.session_state.get('multi_diag_ymin', 0)),

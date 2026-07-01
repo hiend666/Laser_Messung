@@ -38,7 +38,8 @@ FARBE_D2            = 'orange'
 FARBE_V_SCHNITT     = 'green'
 FARBE_VMAX          = 'red'
 FARBE_VMIN          = 'royalblue'
-FARBE_AMAX          = 'orange'
+FARBE_AMAX          = 'orange'    # D2-max (steigende Flanke, Beschleunigung positiv)
+FARBE_AMIN          = 'steelblue' # D2-min (fallende Flanke, Beschleunigung negativ)
 FARBE_CURSOR        = 'red'
 FARBE_RECHTECK      = 'lime'
 FARBE_INTEGRAL_POS  = 'rgba(0, 100, 200, 0.20)'   # blau – Bereich über der 0-Linie
@@ -596,8 +597,8 @@ def _baue_traces(
         fig.add_trace(go.Scatter(
             x=[t_amax_rising], y=[y_amax_rising],
             mode='markers', name='D2-min',
-            marker=dict(color=FARBE_AMAX, size=12, symbol='circle',
-                        line=dict(color=FARBE_AMAX, width=2)),
+            marker=dict(color=FARBE_AMIN, size=12, symbol='circle',
+                        line=dict(color=FARBE_AMIN, width=2)),
             yaxis=active_yaxis,
         ))
 
@@ -635,7 +636,7 @@ def _baue_traces(
         ))
 
     if show_integral:
-        # Fläche unter der Kanalkurve zwischen XA und XB (wie ursprünglich)
+        # Fläche unter der Kanalkurve zwischen XA und XB
         _mask_fill = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
         _df_fill   = df_plot[_mask_fill]
         if len(_df_fill) > 0:
@@ -717,8 +718,8 @@ def build_chart_png(
     y_min   = float(df[_prim_namen].min().min())
     y_range = [y_min, y_max + (y_max - y_min) * Y_PUFFER]
 
-    # Vorberechnete Arrays verwenden (korrekte Skalierung aus app.py);
-    # nur als Fallback intern neu berechnen wenn nichts übergeben wurde.
+    # Vorberechnete Arrays aus app.py verwenden (korrekte Skalierung);
+    # Fallback: SG intern berechnen, wenn velocity_data oder acceleration_data fehlt.
     velocity     = velocity_data     if velocity_data     is not None else None
     acceleration = acceleration_data if acceleration_data is not None else None
     if velocity_data is None or acceleration_data is None:
