@@ -5,8 +5,8 @@ Webbasierte Auswertesoftware für CSV-Messdaten aus Laservibrometern. Die App l�
 ## Funktionsumfang
 
 ### Datenimport
-- CSV-Dateien mit zwei Messkanälen (z. B. Festo-Sensor und DST-Sensor)
-- Unterstützt zwei CSV-Formate: numerische Rohdaten (ohne Kopfzeile) und Dateien mit Spaltenbezeichnungen
+- Bis zu 4 Messkanäle pro Datei
+- Drei Dateiformate: **CSV plain** (kommagetrennt, ohne Zeitachse), **Hubmessung** (TAB-getrennt, .txt), **Oszilloskop CSV** (kommagetrennt, Zeitachse in Sekunden)
 - Konfigurierbare Abtastrate (Eingabe in Hz oder µs)
 - Einstellbare Anzahl zu überspringender Kopfzeilen und maximale Sampleanzahl
 
@@ -47,9 +47,17 @@ Die berechneten Kenngrößen werden in drei Zeilen angezeigt:
 - Manuelle Offset-Eingabe für beide Messkanäle per Slider
 - Auto-0-Schaltfläche setzt den Offset automatisch auf den Mittelwert des sichtbaren Bereichs
 
+### Datei-Merger (separate Seite)
+- Kanäle aus bis zu 4 Dateien zu einer gemeinsamen Datei zusammenführen
+- Unterstützte Eingabeformate: CSV plain, Hubmessung, Oszilloskop CSV
+- Exportformate: CSV plain, TXT (Hubmessung), Oszilloskop CSV
+- Optionale Sampleraten-Angleichung per linearer Interpolation (numpy.interp)
+- Längenanpassung: kürzen oder mit Füllwert auffüllen
+
 ### Export
 - **PDF** (Querformat A4): Diagramm + Kenngrößen-Tabelle mit Dateiname und Zeitstempel
 - **PNG**: Diagramm als Bilddatei
+- **CSV / CSX**: Messdaten mit optionalen eingebetteten Einstellungen
 
 ## Starten
 
@@ -70,4 +78,4 @@ Im Dev-Container startet die App automatisch auf Port 8501.
 
 ## Version
 
-`v1.00.05`
+`v1.05.00`

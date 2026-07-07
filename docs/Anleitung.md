@@ -2,7 +2,7 @@
 
 Web-Oberfläche zur Auswertung von CSV-Messdaten eines Laservibrometers. Zeigt Weg, Geschwindigkeit und Beschleunigung und exportiert Ergebnisse als PDF / PNG / CSV / CSX.
 
-> **Version:** v1.01.13 · **Aufruf:** `streamlit run app.py` (Port 8501)
+> **Version:** v1.05.00 · **Aufruf:** `streamlit run app.py` (Port 8501)
 
 Die Sidebar ist in drei Abschnitte gegliedert: **1. Import**, **2. Auswertung**, **3. Export**. Jeder Einstell-Expander ist einzeln aufklappbar; in der Sidebar ist jeweils nur der gerade benötigte Bereich geöffnet, damit sie nicht zu lang wird.
 
@@ -165,9 +165,31 @@ Unter dem Diagramm befinden sich zwei Slider **XA** und **XB** – linker/rechte
 
 ---
 
+---
+
+## 4. Datei-Merger (separate Seite)
+
+Die Seite **Datei-Merger** (Seitenleiste oben) kombiniert Kanäle aus mehreren Dateien gleichen Dateityps zu einer gemeinsamen Datei.
+
+### Workflow
+
+1. **Dateityp wählen** – CSV plain, Hubmessung oder Oszilloskop CSV (muss für alle Slots identisch sein)
+2. **Bis zu 4 Dateien hochladen** – Pro Slot werden erkannte Kanäle, Sample-Anzahl und Zeitbasis (Δt / Hz) angezeigt
+3. **Kanäle auswählen** – Gewünschte Kanäle per Checkbox auswählen (max. 4 insgesamt)
+4. **Ausgabe-Kanalnamen anpassen** (optional)
+5. **Sampleraten angleichen** (optional) – lineare Interpolation auf das kleinste Δt aller Kanäle
+6. **Längenanpassung** – bei unterschiedlicher Sample-Anzahl: kürzen oder mit Füllwert auffüllen
+7. **Exportformat wählen und herunterladen:**
+   - **CSV plain** → Dateityp „CSV plain", Kopfzeilen = 0
+   - **TXT (Hubmessung)** → Dateityp „Hubmessung", direkt importierbar
+   - **Oszilloskop CSV** → Dateityp „Oszilloskop CSV", mit Einheiten-Zeile
+
+---
+
 ## Tipps
 
 - **Workflow:** Import → Kanäle prüfen → Y-/X-Offsets justieren → Geschwindigkeit/Beschleunigung aktivieren → Diagrammarker nach Bedarf → Export.
 - **Synchronisation mehrerer Kanäle:** Mit **X-Offset** zeitlich ausrichten; mit **Gleiche Nulllinie** (Diagramm-Grenzwerte) auf gleiche Höhe bringen.
 - **Rauschen reduzieren:** SG-Vorfilter pro Kanal oder größere Fenstergröße bei den Ableitungs-Toggles.
 - **Wiederkehrende Messreihen:** Über **Speichern / Laden** die kompletten Einstellungen als JSON sichern.
+- **Mehrere Einzelmessungen zusammenführen:** Datei-Merger → je 1 Kanal pro Datei → kombinierte Datei hochladen.

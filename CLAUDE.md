@@ -29,13 +29,14 @@ Python 3.11 required. Key packages: streamlit, pandas, plotly, kaleido, scipy, r
 
 ## Architecture
 
-Three source files — no build steps, no tests:
+Four source files — no build steps, no tests:
 
 | File | Lines | Inhalt |
 |---|---|---|
-| `app.py` | ~1450 | Streamlit UI, Session State, Callbacks, Hauptfluss |
-| `chart.py` | ~600 | Plotly-Chart-Aufbau, PNG-Export (Kaleido), PDF-Export (ReportLab), Y-Achsen-Layout |
-| `reader.py` | ~420 | CSV-Parsing, SG-Filter-Ableitung |
+| `app.py` | ~2250 | Streamlit UI, Session State, Callbacks, Hauptfluss |
+| `chart.py` | ~1010 | Plotly-Chart-Aufbau, PNG-Export (Kaleido), PDF-Export (ReportLab), Y-Achsen-Layout |
+| `reader.py` | ~645 | CSV-Parsing, SG-Filter-Ableitung |
+| `pages/1_Datei_Merger.py` | ~470 | Multipage-Seite: Kanäle aus mehreren Dateien zu einer CSV/TXT/Oszilloskop-CSV zusammenführen |
 
 **Data flow:**
 1. User uploads a CSV file in the sidebar
@@ -69,4 +70,4 @@ All user-facing text, variable names, and code comments are in **German**. Keep 
 
 ## Version
 
-Tracked as `VERSION = "v1.00.15"` at the top of `app.py`. Update this string when making notable changes.
+Tracked as `VERSION = "v1.05.00"` at the top of `app.py`. Update this string when making notable changes.
