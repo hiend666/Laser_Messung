@@ -137,6 +137,7 @@ _EINSTELLUNGEN_DEFAULTS: dict = {
     'window_length': 30,
     'show_acceleration': False,
     'window_length_accel': 40,
+    'v_time_base_ms': None,
     'show_sop': False,
     'sop_percent': 80,
     'show_integral': False,
@@ -161,7 +162,10 @@ _EINSTELLUNGEN_DEFAULTS: dict = {
     'gleiche_nulllinie': False,
     'export_format': 'PDF',
     'export_mit_werten': False,
-    'export_wert_auswahl': [],
+    # None = noch nie manuell gewählt -> beim ersten Anzeigen werden alle Werte vorausgewählt.
+    # Eine Liste (auch leer []) gilt als bewusste Nutzerauswahl und wird nicht mehr automatisch
+    # auf "alle" zurückgesetzt (siehe Multiselect-Logik im Export-Bereich).
+    'export_wert_auswahl': None,
     'pdf_titel': '',
     'pdf_beschreibung': '',
     'crop_start': None,
@@ -196,6 +200,7 @@ _RUNTIME_DEFAULTS: dict = {
     'last_file_name': None,
     'window_length_sw': 30,
     'window_length_accel_sw': 40,
+    'v_time_base_ms_sw': None,
     'zeit_hz_faktor': 1000.0,
     'n_kanäle_datei': N_KANÄLE,
     'sub_dateityp':   True,
@@ -323,6 +328,10 @@ def _on_window_length_cb():
 
 def _on_window_length_accel_cb():
     st.session_state['window_length_accel'] = st.session_state['window_length_accel_sw']
+
+
+def _on_v_time_base_cb():
+    st.session_state['v_time_base_ms'] = st.session_state['v_time_base_ms_sw']
 
 def _on_x_rel_mode_change():
     """Friert den Nullpunkt ein wenn Start@0 aktiviert wird; löscht ihn beim Deaktivieren."""
@@ -605,6 +614,7 @@ def on_file_upload():
                         st.session_state[_k] = _v
                 st.session_state['window_length_sw']       = st.session_state.get('window_length', 30)
                 st.session_state['window_length_accel_sw'] = st.session_state.get('window_length_accel', 40)
+                st.session_state['v_time_base_ms_sw']      = st.session_state.get('v_time_base_ms')
                 st.session_state['_csx_settings_loaded']   = True
 
 
@@ -626,6 +636,7 @@ def on_settings_upload():
         # Widget-Mirror-Keys nach Laden synchronisieren
         st.session_state['window_length_sw']       = st.session_state.get('window_length', 30)
         st.session_state['window_length_accel_sw'] = st.session_state.get('window_length_accel', 40)
+        st.session_state['v_time_base_ms_sw']      = st.session_state.get('v_time_base_ms')
         st.session_state['_settings_load_status'] = 'ok'
     except Exception as _exc:
         st.session_state['_settings_load_status'] = str(_exc)
@@ -1245,17 +1256,28 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     _tb_s_scale = _ZEIT_TO_S.get(_zeit_einheit, 1e-3) / _ZEIT_TO_S[_tb_s_einheit]
     _tb_min_d = _tb_min_curr * _tb_s_scale
     _tb_max_d = _tb_max_curr * _tb_s_scale
-    _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
     _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
     _tb_dez = max(0, -int(math.floor(math.log10(_tb_step_d)))) if _tb_step_d >= 1e-12 else 2
     _tb_fmt = f"%.{_tb_dez}f"
+    # Gespeicherten ms-Wert in Display-Einheit umrechnen; fehlt er → autom. Default (3% der Zeitachse)
+    _tb_saved_ms = st.session_state.get('v_time_base_ms')
+    if _tb_saved_ms is not None:
+        _tb_def_d = float(np.clip(_tb_saved_ms * _tb_f * _tb_s_scale, _tb_min_d, _tb_max_d))
+    else:
+        _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_s_scale, _tb_min_d, _tb_max_d))
+    # Widget-Mirror-Key immer auf geclippten Wert setzen – verhindert Out-of-Range nach Datei-Wechsel
+    st.session_state['v_time_base_ms_sw'] = _tb_def_d
     _v_tb_display = st.slider(
         f"Zeitfenster d/dt min./max. ({_tb_s_einheit})",
         _tb_min_d, _tb_max_d, _tb_def_d,
         step=_tb_step_d, format=f"{_tb_fmt} {_tb_s_einheit}",
+        key='v_time_base_ms_sw',
+        on_change=_on_v_time_base_cb,
         help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
     v_time_base_ms = (_v_tb_display / _tb_s_scale) / _tb_f   # → ms
+    # Kanonischen Wert nach ms zurückschreiben (für Speichern/Laden)
+    st.session_state['v_time_base_ms'] = v_time_base_ms
     st.divider()
     st.caption("Diagrammlinien")
     show_v_avg       = st.toggle("Schnittlinie A–B", key="show_v_avg",
@@ -2084,17 +2106,22 @@ _exp_mit_werten = st.sidebar.toggle(
 
 if _exp_mit_werten and _exp_ist_diagramm:
     _alle_metrik_keys = list(metrics.keys())
-    # Stale Keys (z.B. Integral nach Deaktivierung) aus gespeicherter Auswahl entfernen.
-    # default= wird bei key=-Widgets in Re-Renders ignoriert – daher direkt session_state setzen.
-    _vorauswahl = [k for k in st.session_state.get('export_wert_auswahl', [])
-                   if k in _alle_metrik_keys]
-    if not _vorauswahl:
+    _gespeicherte_auswahl = st.session_state.get('export_wert_auswahl')
+    if _gespeicherte_auswahl is None:
+        # Noch nie eine Auswahl getroffen (auch nicht durch Laden von Einstellungen) -> alle vorauswählen.
         _vorauswahl = _alle_metrik_keys
+    else:
+        # Bewusste Nutzerauswahl (oder geladene Einstellung) vorhanden: nur Keys behalten,
+        # die es in den aktuellen Metriken noch gibt (z.B. nach Sensor-/Datei-Wechsel).
+        # Bewusst KEIN Reset auf "alle", auch wenn dadurch die Auswahl leer wird –
+        # sonst würden state-abhängige Metrik-Namen (aktiver Kanal, SOP-%, ...) bei jeder
+        # Änderung die gespeicherte/geladene Auswahl unbemerkt auf "alle" zurücksetzen.
+        _vorauswahl = [k for k in _gespeicherte_auswahl if k in _alle_metrik_keys]
     st.session_state['export_wert_auswahl'] = _vorauswahl
     st.sidebar.multiselect(
         "Exportierte Werte", _alle_metrik_keys,
         key="export_wert_auswahl",
-        help="Welche Messwerte sollen exportiert werden?",
+        help="Welche Messwerte sollen exportiert werden? Die Auswahl wird mit den Einstellungen gespeichert/geladen.",
     )
 with st.sidebar.expander("Beschreibung", expanded=False):
     st.text_input(
@@ -2157,7 +2184,8 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
 
             else:
                 # --- Diagramm-Export (PDF / PNG) ---
-                _wert_auswahl = st.session_state.get('export_wert_auswahl', list(metrics.keys()))
+                _wert_auswahl_raw = st.session_state.get('export_wert_auswahl')
+                _wert_auswahl = _wert_auswahl_raw if _wert_auswahl_raw is not None else list(metrics.keys())
                 metrics_export = (
                     {k: v for k, v in metrics.items() if k in _wert_auswahl}
                     if _exp_mit_werten and _wert_auswahl else {}
@@ -2198,6 +2226,7 @@ if st.sidebar.button("📥 Export erstellen", width="stretch",
                     metrics=metrics_export if _exp_format == "PNG" else {},
                     nulllinie_ranges=_nulllinie_ranges if _nulllinie_ranges else None,
                     y_limits=_y_limits,
+                    x_rangemode='normal' if t_offset != 0.0 else 'nonnegative',
                 )
                 if _exp_format == "PDF":
                     file_bytes_out = build_pdf(

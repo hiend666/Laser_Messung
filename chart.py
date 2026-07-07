@@ -700,6 +700,7 @@ def build_chart_png(
     metrics: dict | None = None,
     nulllinie_ranges: dict | None = None,
     y_limits: dict[str, float] | None = None,
+    x_rangemode: str = 'nonnegative',
 ) -> bytes:
     """Rendert das Diagramm mit Kaleido zu PNG-Bytes für den Export."""
     if kanal_einheit_map is None:
@@ -790,7 +791,7 @@ def build_chart_png(
         legend=dict(orientation="h", y=1.0, yanchor="bottom", xanchor="right", x=1,
                     bgcolor="rgba(255,255,255,0.7)"),
         margin=dict(l=100, r=50 if x_domain_end < 1.0 else 10, t=10, b=40),
-        xaxis=dict(autorange=True, rangemode='nonnegative', domain=[0, x_domain_end],
+        xaxis=dict(autorange=True, rangemode=x_rangemode, domain=[0, x_domain_end],
                    showgrid=True, gridcolor='rgba(180,180,180,0.4)', gridwidth=1, nticks=20),
         plot_bgcolor='white',
         paper_bgcolor='white',
