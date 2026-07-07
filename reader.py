@@ -294,12 +294,44 @@ def read_csv_plain(
     return result_df
 
 
+def _is_hub_data_marker(line: str) -> bool:
+    """Erkennt die Kopfzeile, die den Rohdaten-Block einer Hubmessung-TXT einleitet.
+
+    Unterstützt zwei Varianten:
+    - '####Test Data####' (Format mit ####-Abschnittsüberschriften, z.B. 5_test.txt)
+    - 'Raw Data:'          (kompaktes Format ohne ####-Abschnitte, z.B. Test_neu.txt)
+    """
+    s = line.strip()
+    return "####Test Data####" in s or s.rstrip(':').strip().lower() == "raw data"
+
+
+def _parse_float_flex(token: str) -> tuple[bool, str]:
+    """Prüft, ob token als Zahl interpretierbar ist – mit Punkt- oder Komma-Dezimal.
+
+    Gibt (erfolgreich, erkanntes_dezimalzeichen) zurück.
+    """
+    try:
+        float(token)
+        return True, '.'
+    except ValueError:
+        try:
+            float(token.replace(',', '.'))
+            return True, ','
+        except ValueError:
+            return False, '.'
+
+
 def read_hubmessung_txt(
     file_bytes: bytes,
     max_samples: int,
     kanal_namen: tuple[str, ...],
 ) -> pd.DataFrame:
     """Liest TXT-Datei für Hubmessungen (TAB-getrennt, fester Header-Block).
+
+    Unterstützt zwei Dateivarianten (siehe _is_hub_data_marker):
+    - '####Test Data####'-Block mit Dezimalpunkt in den Messwerten.
+    - 'Raw Data:'-Block mit Dezimalkomma in den Messwerten.
+    Das Dezimalzeichen wird automatisch anhand der ersten gültigen Datenzeile erkannt.
 
     Gibt DataFrame mit 'Zeit (ms)' und benannten Kanalspalten zurück.
     """
@@ -311,14 +343,15 @@ def read_hubmessung_txt(
 
     data_start_idx = -1
     for i, line in enumerate(lines):
-        if "####Test Data####" in line:
+        if _is_hub_data_marker(line):
             data_start_idx = i + 2
             break
 
     if data_start_idx == -1:
-        raise ValueError("TXT-Datei enthält keinen gültigen '####Test Data####' Block.")
+        raise ValueError("TXT-Datei enthält keinen gültigen Datenblock ('####Test Data####' oder 'Raw Data:').")
 
     filtered_lines: list[str] = []
+    decimal = '.'
     for line in lines[data_start_idx:]:
         if "####JSON Data####" in line:
             break
@@ -326,18 +359,18 @@ def read_hubmessung_txt(
         if not line:
             continue
         parts = line.split('\t')
-        try:
-            float(parts[0])
-            filtered_lines.append(line)
-        except (ValueError, IndexError):
+        ok, dez = _parse_float_flex(parts[0])
+        if not ok:
             continue
+        decimal = dez
+        filtered_lines.append(line)
         if nrows is not None and len(filtered_lines) >= nrows:
             break
 
     if not filtered_lines:
         raise ValueError("Keine gültigen numerischen Daten in der TXT-Datei gefunden.")
 
-    df = pd.read_csv(io.StringIO('\n'.join(filtered_lines)), sep='\t', decimal='.', header=None)
+    df = pd.read_csv(io.StringIO('\n'.join(filtered_lines)), sep='\t', decimal=decimal, header=None)
 
     erste_zeile = df.iloc[0]
     df = df[[c for c in df.columns if pd.notna(erste_zeile[c])]]
@@ -550,17 +583,17 @@ def detect_kanal_count(file_bytes: bytes, file_type: str, skip_rows: int = 0) ->
             content = file_bytes.decode('utf-8', errors='ignore')
             lines   = content.splitlines()
             for i, line in enumerate(lines):
-                if "####Test Data####" in line:
+                if _is_hub_data_marker(line):
                     for raw in lines[i + 2:]:
                         raw = raw.strip()
                         if not raw:
                             continue
                         parts = raw.split('\t')
-                        try:
-                            float(parts[0])
-                            return max(1, len([p for p in parts if p.strip()]) - 1)
-                        except (ValueError, IndexError):
+                        if not parts:
                             continue
+                        ok, _ = _parse_float_flex(parts[0])
+                        if ok:
+                            return max(1, len([p for p in parts if p.strip()]) - 1)
             return 1
 
         # CSV plain
