@@ -182,18 +182,19 @@ def peek_csv_plain_einheiten(file_bytes: bytes, n_kanäle: int,
         return [None] * n_kanäle
 
 
-def peek_csv_plain_kanalnames(file_bytes: bytes, n_kanäle: int) -> list[str]:
-    """Liest Spaltennamen aus der ERSTEN Zeile einer CSV plain Datei.
+def peek_csv_plain_kanalnames(file_bytes: bytes, n_kanäle: int, skip_rows: int = 0) -> list[str]:
+    """Liest Spaltennamen aus der ersten Daten-Zeile einer CSV plain Datei.
 
+    skip_rows: Kopfzeilen überspringen (wie in read_csv_plain).
     Gibt bis zu n_kanäle Namen zurück.
-    Leere Liste wenn die erste nicht-leere Zeile numerische Werte enthält.
+    Leere Liste wenn die Zeile nach skip_rows numerische Werte enthält.
     """
     try:
         content = file_bytes.decode('utf-8', errors='ignore')
         lines   = [l for l in content.splitlines() if l.strip()]
-        if not lines:
+        if len(lines) <= skip_rows:
             return []
-        first_line = lines[0]
+        first_line = lines[skip_rows]
         sep        = ';' if ';' in first_line else ','
         parts      = [p.strip().strip('"').strip("'") for p in first_line.split(sep)]
         try:

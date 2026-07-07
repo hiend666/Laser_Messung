@@ -38,8 +38,38 @@ def _fmt_de(value: float, nachkomma: int = 0) -> str:
     """Formatiert eine Zahl im deutschen Format (Punkt=Tausender, Komma=Dezimal)."""
     s = f"{value:,.{nachkomma}f}"
     # Python liefert z.B. '392,156.9' (en-US) -> nach de-DE tauschen
-    s = s.replace(",", "\u0001").replace(".", ",").replace("\u0001", ".")
+    s = s.replace(",", "").replace(".", ",").replace("", ".")
     return s
+
+
+@st.cache_data(show_spinner=False)
+def _lade_datei_gecacht(
+    file_bytes: bytes,
+    file_type: str,
+    skip_rows: int,
+) -> tuple[pd.DataFrame, float, tuple[str, ...], tuple[str, ...]]:
+    """Liest Datei ein und cached das Ergebnis; kein Re-Parse bei jedem Rerun.
+
+    Gibt (raw_df, hz_faktor, messspalten, anzeige_namen) zurück:
+    - messspalten:   Spaltennamen im raw_df (K1..Kn) – immer gültige df-Keys
+    - anzeige_namen: lesbare Namen aus dem Datei-Header (für UI und Export-Default)
+    """
+    n_kanaele = reader.detect_kanal_count(file_bytes, file_type, skip_rows)
+    kanal_namen_tmp = tuple(f"K{i}" for i in range(1, n_kanaele + 1))
+    # reader.load_raw statt manuellem if/elif/else-Dispatch
+    raw_df, hz_faktor = reader.load_raw(file_bytes, file_type, skip_rows, 0, kanal_namen_tmp)
+    # Tatsächliche Messspalten aus dem geladenen DataFrame ableiten –
+    # read_hubmessung_txt kürzt kanal_namen intern, wenn die Datei weniger
+    # Spalten hat als detect_kanal_count zurückgegeben hat.
+    messspalten = tuple(c for c in raw_df.columns if c != "Zeit (ms)")
+    # Lesbare Anzeigenamen: für CSV plain Header-Zeile nach skip_rows lesen
+    if file_type == "CSV plain":
+        peeked = reader.peek_csv_plain_kanalnames(file_bytes, len(messspalten), skip_rows)
+        anzeige_namen = tuple(peeked) if peeked else messspalten
+    else:
+        anzeige_namen = messspalten
+    return raw_df, hz_faktor, messspalten, anzeige_namen
+
 
 st.set_page_config(layout="wide", page_title="Datei-Merger", page_icon="🔗")
 
@@ -91,43 +121,33 @@ for slot_idx, col in enumerate(cols, start=1):
         if f is not None:
             try:
                 file_bytes = f.getvalue()
-                n_kanaele_datei = reader.detect_kanal_count(file_bytes, file_type, skip_rows)
-
-                if file_type == "CSV plain":
-                    peeked = reader.peek_csv_plain_kanalnames(file_bytes, n_kanaele_datei)
-                    kanal_namen = tuple(peeked) if peeked else tuple(
-                        f"K{i}" for i in range(1, n_kanaele_datei + 1)
-                    )
-                else:
-                    kanal_namen = tuple(f"K{i}" for i in range(1, n_kanaele_datei + 1))
-
-                if file_type == "Hubmessung":
-                    raw_df = reader.read_hubmessung_txt(file_bytes, 0, kanal_namen)
-                    hz_faktor = 1000.0
-                elif file_type == "Oszilloskop CSV":
-                    raw_df, hz_faktor = reader.read_oszilloskop_csv(
-                        file_bytes, 0, kanal_namen, tuple(1.0 for _ in kanal_namen)
-                    )
-                else:
-                    raw_df = reader.read_csv_plain(file_bytes, skip_rows, 0, kanal_namen)
-                    hz_faktor = 1000.0
+                raw_df, hz_faktor, messspalten, anzeige_namen = _lade_datei_gecacht(
+                    file_bytes, file_type, int(skip_rows)
+                )
 
                 if "Zeit (ms)" in raw_df.columns:
                     zeit = raw_df["Zeit (ms)"].values
                     n_samples = len(zeit)
                     if n_samples > 1:
                         dt = float(zeit[1] - zeit[0])
-                        sr_hz = hz_faktor / dt if dt not in (0, None) else float("nan")
+                        sr_hz = hz_faktor / dt if dt != 0.0 else float("nan")
                     else:
                         dt, sr_hz = float("nan"), float("nan")
                 else:
                     n_samples = len(raw_df)
                     dt, sr_hz = None, None   # CSV plain: keine eigene Zeitspalte in der Datei
 
-                info.update(df=raw_df, namen=kanal_namen, hz_faktor=hz_faktor,
-                            n_samples=n_samples, dt=dt, sr_hz=sr_hz)
+                info.update(
+                    df=raw_df,
+                    namen=messspalten,           # Df-Spaltennamen (K1..Kn) – für df[]-Zugriff
+                    anzeige_namen=anzeige_namen, # Lesbare Namen aus Datei-Header
+                    hz_faktor=hz_faktor,
+                    n_samples=n_samples,
+                    dt=dt,
+                    sr_hz=sr_hz,
+                )
 
-                st.success(f"{len(kanal_namen)} Kanal/Kanäle erkannt")
+                st.success(f"{len(messspalten)} Kanal/Kanäle erkannt")
                 st.caption(f"📊 {_fmt_de(n_samples)} Samples")
                 if dt is not None and not np.isnan(dt):
                     st.caption(f"⏱️ Δt = {_fmt_de(dt, 4)} ms  (≈ {_fmt_de(sr_hz, 1)} Hz)")
@@ -135,8 +155,9 @@ for slot_idx, col in enumerate(cols, start=1):
                     st.caption("⏱️ Zeitbasis: synthetisch (globale Samplerate in Hauptanwendung)")
 
                 st.markdown("**Kanäle auswählen:**")
-                for ki, kname in enumerate(kanal_namen):
-                    label = kname.strip() if kname and kname.strip() else f"Kanal {ki + 1}"
+                for ki, kname in enumerate(messspalten):
+                    anzeige = anzeige_namen[ki] if ki < len(anzeige_namen) else kname
+                    label = anzeige.strip() or kname
                     checked = st.checkbox(label, key=f"merger_ch_{slot_idx}_{ki}")
                     if checked:
                         info["selected"].append(ki)
@@ -157,14 +178,18 @@ for slot_idx, info in enumerate(slot_data, start=1):
     df = info.get("df")
     if df is None:
         continue
+    messspalten   = info["namen"]
+    anzeige_namen = info.get("anzeige_namen", messspalten)
     for ki in info.get("selected", []):
-        kname = info["namen"][ki]
+        kname   = messspalten[ki]   # immer gültiger df-Key
+        anzeige = anzeige_namen[ki] if ki < len(anzeige_namen) else kname
         selected.append({
-            "label": kname.strip() if kname and kname.strip() else f"Datei{slot_idx}_K{ki + 1}",
-            "array": df[kname].values,
-            "n": len(df[kname].values),
-            "dt": info.get("dt"),
-            "quelle": info["file"].name,
+            "label":     anzeige.strip() or f"Datei{slot_idx}_K{ki + 1}",
+            "array":     df[kname].values,
+            "n":         len(df),
+            "dt":        info.get("dt"),
+            "hz_faktor": info.get("hz_faktor", 1000.0),
+            "quelle":    info["file"].name,
         })
 
 n_selected = len(selected)
@@ -198,13 +223,18 @@ else:
     # das Resample-Ergebnis wird separat vorgehalten, damit die Übersichts-
     # tabelle Original- und resamplete Sample-Anzahl nebeneinander zeigen kann.
     # ------------------------------------------------------------------
-    if "merger_resample_active" not in st.session_state:
-        st.session_state["merger_resample_active"] = False
+    st.session_state.setdefault("merger_resample_active", False)
 
     _dts_bekannt = [c["dt"] for c in selected if c["dt"] is not None and not np.isnan(c["dt"])]
     _distinct_dts = {round(d, 6) for d in _dts_bekannt}
     resample_moeglich = len(_dts_bekannt) == n_selected and len(_distinct_dts) > 1
     target_dt = min(_dts_bekannt) if _dts_bekannt else None
+    # hz_faktor des Kanals mit kleinstem Δt – für korrekte Hz-Anzeige im Resample-Ergebnis
+    hz_faktor_target = next(
+        (c["hz_faktor"] for c in selected
+         if c["dt"] is not None and target_dt is not None and abs(c["dt"] - target_dt) < 1e-9),
+        1000.0,
+    )
 
     resample_arrays: list[np.ndarray | None] = [None] * n_selected
     resample_n: list[int | None] = [None] * n_selected
@@ -226,23 +256,28 @@ else:
             st.rerun()
 
         if st.session_state["merger_resample_active"]:
-            for i, c in enumerate(selected):
-                dt_i, n_i = c["dt"], c["n"]
-                if abs(dt_i - target_dt) < 1e-12:
-                    resample_arrays[i] = c["array"]
-                    resample_n[i] = n_i
-                    continue
-                t_orig = np.arange(n_i, dtype=np.float64) * dt_i
-                duration = t_orig[-1] if n_i > 1 else 0.0
-                n_new = int(round(duration / target_dt)) + 1
-                t_new = np.arange(n_new, dtype=np.float64) * target_dt
-                # np.interp: lineare Interpolation, füllt die fehlenden Zwischenwerte
-                resample_arrays[i] = np.interp(t_new, t_orig, c["array"])
-                resample_n[i] = n_new
-            st.success(
-                f"Sampleraten linear interpoliert (numpy.interp) auf Δt = "
-                f"{_fmt_de(target_dt, 4)} ms (≈ {_fmt_de(1000.0 / target_dt, 1)} Hz)."
-            )
+            try:
+                for i, c in enumerate(selected):
+                    dt_i, n_i = c["dt"], c["n"]
+                    if abs(dt_i - target_dt) < 1e-12:
+                        resample_arrays[i] = c["array"]
+                        resample_n[i] = n_i
+                        continue
+                    t_orig = np.arange(n_i, dtype=np.float64) * dt_i
+                    duration = t_orig[-1] if n_i > 1 else 0.0
+                    n_new = int(round(duration / target_dt)) + 1
+                    t_new = np.arange(n_new, dtype=np.float64) * target_dt
+                    # np.interp: lineare Interpolation, füllt die fehlenden Zwischenwerte
+                    resample_arrays[i] = np.interp(t_new, t_orig, c["array"])
+                    resample_n[i] = n_new
+                st.success(
+                    f"Sampleraten linear interpoliert (numpy.interp) auf Δt = "
+                    f"{_fmt_de(target_dt, 4)} ms "
+                    f"(≈ {_fmt_de(hz_faktor_target / target_dt, 1)} Hz)."
+                )
+            except Exception as exc:
+                st.error(f"Resampling fehlgeschlagen: {exc}")
+                st.session_state["merger_resample_active"] = False
     elif n_selected > 1 and not _dts_bekannt:
         st.caption(
             "ℹ️ Sampleraten-Angleichung nicht verfügbar: Dateityp 'CSV plain' hat keine "
@@ -341,17 +376,97 @@ else:
     st.markdown("**Vorschau (erste 20 Zeilen):**")
     st.dataframe(out_df.head(20), width="stretch")
 
-    csv_bytes = out_df.to_csv(index=False, float_format="%.6f").encode("utf-8")
-    st.download_button(
-        "💾 Kombinierte CSV (plain) herunterladen",
-        data=csv_bytes,
-        file_name="kombiniert_plain.csv",
-        mime="text/csv",
-        width="stretch",
-    )
-    st.caption(
-        "ℹ️ Beim Hochladen in der Hauptanwendung: Dateityp 'CSV plain', "
-        "'Kopfzeilen überspringen' = 0 – die Kanalnamen werden automatisch aus der "
-        "ersten Zeile übernommen. Die Abtastrate bitte passend zur ursprünglichen "
-        "Zeitbasis der Quelldateien manuell einstellen (siehe Delta-t-Spalte oben)."
-    )
+    st.divider()
+    st.markdown("**Export**")
+
+    # --- Gemeinsames Δt für alle zeitachsenbasierten Formate ---
+    _dts_eff = [d for d in eff_dt if d is not None and not np.isnan(d)]
+    if _dts_eff:
+        _dt_export       = float(min(_dts_eff))
+        _hz_faktor_export = hz_faktor_target
+        st.caption(
+            f"⏱️ Δt = {_fmt_de(_dt_export, 6)} ms "
+            f"(≈ {_fmt_de(_hz_faktor_export / _dt_export, 1)} Hz, aus Quelldateien)"
+        )
+    else:
+        _dt_export = float(st.number_input(
+            "Δt (ms) für Zeitachse",
+            min_value=1e-9, value=0.005, format="%.6f",
+            key="merger_export_dt",
+            help="CSV plain hat keine eigene Zeitbasis – Zeitschritt hier manuell eingeben.",
+        ))
+        _hz_faktor_export = 1000.0   # manuelle Eingabe immer in ms
+
+    # dt in Sekunden – für Oszilloskop CSV (Zeitachse dort in s)
+    _dt_s_export = _dt_export / _hz_faktor_export
+
+    # --- Einheiten pro Kanal (Oszilloskop CSV-Header) ---
+    st.markdown("**Einheiten** (für Oszilloskop-Export, optional):")
+    _einheit_spalten = st.columns(n_selected)
+    _einheiten_export: list[str] = []
+    for _i, _ecol in enumerate(_einheit_spalten):
+        with _ecol:
+            _einheiten_export.append(
+                st.text_input(
+                    out_names[_i],
+                    value="",
+                    key=f"merger_osc_einheit_{_i}",
+                    placeholder="z.B. µm, mm/s",
+                ).strip()
+            )
+
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
+
+    # --- CSV plain ---
+    with dl_col1:
+        _csv_bytes = out_df.to_csv(index=False, float_format="%.6f").encode("utf-8")
+        st.download_button(
+            "💾 CSV (plain)",
+            data=_csv_bytes,
+            file_name="kombiniert_plain.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        st.caption("Dateityp 'CSV plain', Kopfzeilen = 0.")
+
+    # --- TXT Hubmessung ---
+    with dl_col2:
+        _zeit_ms = np.arange(out_len, dtype=np.float64) * _dt_export
+        _txt_df  = pd.DataFrame({"Time (ms)": _zeit_ms})
+        for _col in out_df.columns:
+            _txt_df[_col] = out_df[_col].values
+        # Raw Data: Marker + TAB-getrennt + Komma-Dezimal
+        _txt_bytes = (
+            "Raw Data:\n"
+            + _txt_df.to_csv(index=False, sep="\t", decimal=",", float_format="%.6f")
+        ).encode("utf-8")
+        st.download_button(
+            "💾 TXT (Hubmessung)",
+            data=_txt_bytes,
+            file_name="kombiniert_hubmessung.txt",
+            mime="text/plain",
+            width="stretch",
+        )
+        st.caption("Dateityp 'Hubmessung'.")
+
+    # --- Oszilloskop CSV ---
+    with dl_col3:
+        # Zeile 1: x-axis,1,2,...  |  Zeile 2: second,Einheit1,Einheit2,...
+        _osc_header = "x-axis," + ",".join(str(_i + 1) for _i in range(n_selected))
+        _osc_units  = "second," + ",".join(_einheiten_export)
+        # Zeitachse in Sekunden (wissenschaftliche Notation wie im Originalformat)
+        _zeit_s     = np.arange(out_len, dtype=np.float64) * _dt_s_export
+        # Wertzeilen via pandas – kommagetrennt, Punkt-Dezimal, kein Header/Index
+        _val_lines  = out_df.to_csv(
+            index=False, header=False, float_format="%.6f"
+        ).splitlines()
+        _osc_daten  = [f"{_t:.9e},{_v}" for _t, _v in zip(_zeit_s, _val_lines)]
+        _osc_bytes  = "\n".join([_osc_header, _osc_units] + _osc_daten).encode("utf-8")
+        st.download_button(
+            "💾 Oszilloskop CSV",
+            data=_osc_bytes,
+            file_name="kombiniert_oszilloskop.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        st.caption("Dateityp 'Oszilloskop CSV'.")

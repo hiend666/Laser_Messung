@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.02.03"
+VERSION = "v1.05.00"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -934,22 +934,22 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
                 _sig_ab  = _sig_raw
 
             _ob1, _ob2, _ob3, _ob4 = st.columns(4)
-            if _ob1.button("Max.", key="off_btn_max", use_container_width=True,
+            if _ob1.button("Max.", key="off_btn_max", width="stretch",
                            help="Y-Offset: Maximalwert im A-B-Bereich → 0"):
                 _v = -float(np.max(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-            if _ob2.button("Avg.", key="off_btn_avg", use_container_width=True,
+            if _ob2.button("Avg.", key="off_btn_avg", width="stretch",
                            help="Y-Offset: Mittelwert im A-B-Bereich → 0"):
                 _v = -float(np.mean(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-            if _ob3.button("Min.", key="off_btn_min", use_container_width=True,
+            if _ob3.button("Min.", key="off_btn_min", width="stretch",
                            help="Y-Offset: Minimalwert im A-B-Bereich → 0"):
                 _v = -float(np.min(_sig_ab))
                 st.session_state[f'off{_off_kn}']        = _v
                 st.session_state[f'off{_off_kn}_slider'] = _v
-            if _ob4.button("↺", key="reset_offsets", use_container_width=True,
+            if _ob4.button("↺", key="reset_offsets", width="stretch",
                            help="Setzt alle Y-Offsets auf 0."):
                 for _ri in range(1, N_KANÄLE + 1):
                     st.session_state[f'off{_ri}']        = 0.0
@@ -1068,7 +1068,7 @@ with st.sidebar.expander("Einstellungen", expanded=st.session_state.einstellunge
             data=_json_str,
             file_name="einstellungen.json",
             mime="application/json",
-            use_container_width=True,
+            width="stretch",
             help="Alle aktuellen Einstellungen als JSON-Datei herunterladen.",
         )
         st.file_uploader(
