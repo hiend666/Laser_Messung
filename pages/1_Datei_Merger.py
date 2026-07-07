@@ -71,14 +71,13 @@ def _lade_datei_gecacht(
     return raw_df, hz_faktor, messspalten, anzeige_namen
 
 
-st.set_page_config(layout="wide", page_title="Datei-Merger", page_icon="🔗")
+st.set_page_config(layout="wide", page_title="Datei-Merger / Converter", page_icon="🔗")
 
-st.title("🔗 Datei-Merger")
+st.title("🔗 Datei-Merger / Converter")
 st.caption(
-    "Kombiniert Kanäle aus mehreren Dateien **gleichen Dateityps** zu einer "
-    "gemeinsamen CSV (plain)-Datei – z. B. 4 Einzelmessungen mit je 1 Kanal "
-    "zu einer 4-Kanal-Datei. Die erzeugte Datei kann anschließend ganz normal "
-    "in der Hauptanwendung hochgeladen werden."
+    "Kombiniert Kanäle aus mehreren Dateien **gleichen Dateityps** zu einer gemeinsamen Datei "
+    "und konvertiert zwischen den Formaten **CSV plain**, **TXT (Hubmessung)** und **Oszilloskop CSV** – "
+    "z. B. 4 Einzelmessungen mit je 1 Kanal zu einer 4-Kanal-Datei oder Hubmessung → Oszilloskop CSV."
 )
 
 file_type = st.radio(
