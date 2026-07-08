@@ -1172,13 +1172,13 @@ if crop_active:
     ci_start = get_idx_at_x(st.session_state.crop_start, sample_rate, max_idx_full, _hz_faktor)
     ci_end   = get_idx_at_x(st.session_state.crop_end,   sample_rate, max_idx_full, _hz_faktor)
     df       = df_use.iloc[ci_start:ci_end + 1].reset_index(drop=True)
-    min_zeit = round(float(df['Zeit (ms)'].iloc[0]),  3)
-    max_zeit = round(float(df['Zeit (ms)'].iloc[-1]), 3)
+    min_zeit = float(df['Zeit (ms)'].iloc[0])
+    max_zeit = float(df['Zeit (ms)'].iloc[-1])
     max_idx  = len(df) - 1
 else:
     df       = df_use
     min_zeit = 0.0
-    max_zeit = round(max_zeit_full, 3)
+    max_zeit = max_zeit_full
     max_idx  = max_idx_full
 
 # Automatische Einheitenskalierung: feinste Einheit wählen, bei der der
