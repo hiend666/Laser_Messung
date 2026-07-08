@@ -402,7 +402,7 @@
 <div class="page-header">
   <div class="page-eyebrow">Laser Messung · Merger &amp; Import</div>
   <h1>Welches Format überträgt welche Informationen?</h1>
-  <p class="page-subtitle">Übersicht der drei Merger-Exportformate und des Haupt-App-Formats CSX — was wird in die Datei geschrieben und was wird beim erneuten Importieren automatisch erkannt.</p>
+  <p class="page-subtitle">Übersicht der vier Merger-Exportformate, des Haupt-App-Formats CSX und des neuen CSX-Direktimports im Merger — was wird in die Datei geschrieben und was wird beim erneuten Importieren automatisch erkannt.</p>
 </div>
 
 <!-- Legend -->
@@ -439,7 +439,7 @@
       <th class="format-cell">
         <div class="format-stripe s4"></div>
         <span class="format-name">CSX</span>
-        <span class="format-origin">Haupt-App · Datei-Export</span>
+        <span class="format-origin">Haupt-App · Export &amp; Merger-Import</span>
       </th>
     </tr>
   </thead>
@@ -533,6 +533,34 @@
       </td>
     </tr>
 
+    <tr>
+      <th class="row-head">Direktimport im Merger<span class="row-desc">Kanäle aus dieser Datei zusammenführen</span></th>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Ja</span>
+          <span class="cell-note">Dateityp „CSV plain" im Merger wählen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Ja</span>
+          <span class="cell-note">Dateityp „Hubmessung" im Merger wählen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Ja</span>
+          <span class="cell-note">Dateityp „Oszilloskop CSV" im Merger wählen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Ja (neu)</span>
+          <span class="cell-note">Dateityp „CSX" im Merger wählen. Kanalnamen und Einheiten werden aus dem JSON-Block automatisch übernommen und in den Ausgabe-Feldern vorbelegt.</span>
+        </div>
+      </td>
+    </tr>
+
     <!-- GROUP: Zeitdaten -->
     <tr class="group-header-row">
       <th>Zeitdaten</th>
@@ -577,8 +605,8 @@
       </td>
       <td>
         <div class="cell-inner">
-          <span class="badge badge-warn">⚠ Immer ms</span>
-          <span class="cell-note">Header schreibt stets <em>"Time (ms)"</em>. Wenn Quelldatei µs-Basis hat, wird Δt falsch skaliert — Faktor 1000-Fehler beim Reimport!</span>
+          <span class="badge badge-yes">✓ Korrekt</span>
+          <span class="cell-note">Header schreibt stets <em>"Time (ms)"</em>, Zeitwerte intern immer in Sekunden — Konvertierung auf ms beim Export ist einheitenunabhängig korrekt. Reimport dividiert durch 1000 → richtige Samplerate.</span>
         </div>
       </td>
       <td>
@@ -636,11 +664,10 @@
 </table>
 </div>
 
-<!-- Bug callout -->
-<div class="callout">
-  <strong>⚠ Bekannte Einschränkung — TXT Hubmessung mit µs-Quellen:</strong>
-  Die Merger-TXT schreibt den Zeitvektor stets mit dem Label <code>Time (ms)</code>, speichert aber die Δt-Werte in der Einheit der Quelldatei. Wenn die Quelle eine Oszilloskop-CSV mit µs-Zeitbasis ist, erscheinen die Zeitwerte beim Re-Import als Hubmessung um den Faktor 1000 zu groß (z.&nbsp;B. <code>0,5 µs → 0,5 ms</code>).
-  <br>Workaround: Für Quellen im µs-Bereich stattdessen <strong>Oszilloskop CSV</strong> als Exportformat verwenden.
+<!-- Fix callout -->
+<div class="callout" style="background:var(--yes-bg);border-left-color:var(--yes-fg);color:var(--yes-fg);">
+  <strong>✓ Behoben (v1.06) — Zeitachsen-Refactoring auf SI-Einheiten:</strong>
+  Alle internen Zeitwerte werden jetzt konsequent in <strong>Sekunden</strong> gespeichert (<code>Zeit (s)</code>-Spalte). Der Merger-TXT-Export rechnet Δt immer korrekt in ms um — unabhängig von der Zeitbasis der Quelle (s / ms / µs / ns). Der Re-Import als Hubmessung dividiert die <code>Time (ms)</code>-Werte durch 1000 und liefert die korrekte Samplerate. Der frühere Faktor-1000-Fehler beim Mischen von Quellen unterschiedlicher Zeitbasen tritt nicht mehr auf.
 </div>
 
 <!-- Workflow Empfehlung -->
@@ -662,10 +689,10 @@
     <div class="workflow-format"><span class="workflow-dot d2"></span>TXT Hubmessung</div>
     <ul class="workflow-steps">
       <li><span class="step-num">①</span><span>Dateityp: <span class="step-key">Hubmessung</span></span></li>
-      <li><span class="step-num">②</span><span>Zeitachse wird <span class="step-key">automatisch</span> erkannt</span></li>
+      <li><span class="step-num">②</span><span>Zeitachse + Samplerate <span class="step-key">automatisch</span> erkannt</span></li>
       <li><span class="step-num">③</span><span>Kanalnamen <span class="step-key">manuell</span> setzen</span></li>
       <li><span class="step-num">④</span><span>Einheiten je Kanal <span class="step-key">manuell</span> wählen</span></li>
-      <li><span class="step-num">⑤</span><span>⚠ Nicht für µs-Quellen geeignet</span></li>
+      <li><span class="step-num">⑤</span><span>✓ Auch für µs / ns-Quellen korrekt</span></li>
     </ul>
   </div>
 
@@ -681,17 +708,21 @@
   </div>
 
   <div class="workflow-card">
-    <div class="workflow-format"><span class="workflow-dot d4"></span>CSX (Vollständig)</div>
+    <div class="workflow-format"><span class="workflow-dot d4"></span>CSX</div>
     <ul class="workflow-steps">
-      <li><span class="step-num">①</span><span>Merger → Oszilloskop CSV exportieren</span></li>
-      <li><span class="step-num">②</span><span>In Haupt-App laden, Kanäle konfigurieren</span></li>
-      <li><span class="step-num">③</span><span>Export-Format: <span class="step-key">CSX</span> wählen</span></li>
-      <li><span class="step-num">④</span><span>Alle Einstellungen <span class="step-key">automatisch</span> beim nächsten Laden</span></li>
+      <li><span class="step-num">①</span><span><strong>Import im Merger:</strong> Dateityp <span class="step-key">CSX</span> → .csx hochladen</span></li>
+      <li><span class="step-num">②</span><span>Kanalnamen + Einheiten <span class="step-key">automatisch</span> vorbelegt</span></li>
+      <li><span class="step-num">③</span><span>Kanäle auswählen, exportieren</span></li>
+      <li><span class="step-num">—</span><span style="color:var(--text-muted);font-style:italic">Haupt-App → CSX erzeugen:</span></li>
+      <li><span class="step-num">①</span><span>Laden, konfigurieren, Export-Format: <span class="step-key">CSX</span></span></li>
+      <li><span class="step-num">②</span><span>Alle Einstellungen <span class="step-key">automatisch</span> beim nächsten Laden</span></li>
     </ul>
   </div>
 
 </div>
 
 <div class="footnote">
-  <strong>CSX wird nicht direkt vom Merger erzeugt.</strong> Der CSX-Export steht nur in der Haupt-App zur Verfügung (Seitenleiste → Export → Format: CSX). Er speichert alle <code style="font-family:monospace;font-size:0.85em">EINSTELLUNGEN_KEYS</code> inklusive der eingebetteten Messdaten. Ein CSX aus einem früheren Merge-Workflow (Merger → Oszilloskop CSV → Haupt-App → CSX) ist der einzige verlustfreie Rückweg.
+  <strong>CSX im Merger (neu ab v1.06):</strong> Der Merger kann CSX-Dateien direkt importieren (Dateityp „CSX", Endung <code style="font-family:monospace;font-size:0.85em">.csx</code>). Kanalnamen (<code style="font-family:monospace;font-size:0.85em">ch1_name … ch4_name</code>) und Einheiten (<code style="font-family:monospace;font-size:0.85em">ch1_einheit … ch4_einheit</code>) werden automatisch aus dem eingebetteten JSON-Block übernommen.
+  <br><br>
+  <strong>CSX erzeugen:</strong> Der CSX-Export steht nur in der Haupt-App zur Verfügung (Seitenleiste → Export → Format: CSX). Er speichert alle <code style="font-family:monospace;font-size:0.85em">EINSTELLUNGEN_KEYS</code> inklusive der Messdaten. Der verlustfreie Workflow lautet: Merger-Export (beliebiges Format) → Haupt-App laden &amp; konfigurieren → als CSX exportieren → erneut in Haupt-App oder Merger laden.
 </div>

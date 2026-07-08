@@ -96,7 +96,7 @@ def _ableit_info(einheit: str, zeit_einheit: str = 'ms') -> tuple[str, str, floa
         # SG liefert einheit/s → Faktor 1, Einheit wird später per _laenge_autoscale gesetzt
         return f'{einheit}/s', f'{einheit}/s²', 1.0, 1.0
     else:
-        # Nicht-Länge: wie bisher einheit/zeit_einheit
+        # Nicht-Länge: Einheit/Zeitanzeigeeinheit (z.B. V/ms, N/µs)
         zhf = 1.0 / _ZEIT_TO_S.get(zeit_einheit, 1e-3)
         return (f'{einheit}/{zeit_einheit}', f'{einheit}/{zeit_einheit}²',
                 1.0 / zhf, 1.0 / (zhf ** 2))
@@ -416,11 +416,14 @@ def _finde_sop_kreuzungen(
         t1 = float(zeit[min(n - 1, idx_abs + 10)])
         return (t, t0, t1, sop_level, v, flanke)
 
+    # Vorlaufzeit: 10 Samples – einheitenunabhängig, da zeit in Sekunden
+    vorlauf = 10.0 / sample_rate
+
     for run in rect_fit['runs']:
-        puls_dauer = max(0.1, run['t_end'] - run['t_start'])
+        puls_dauer = max(vorlauf, run['t_end'] - run['t_start'])
 
         # Steigende Flanke: kurz vor Pulsstart bis erstes Drittel des Pulses
-        idx_r = np.where((zeit >= run['t_start'] - 0.5) &
+        idx_r = np.where((zeit >= run['t_start'] - vorlauf) &
                          (zeit <= run['t_start'] + puls_dauer * 0.3))[0]
         if len(idx_r) >= 2:
             s = signal[idx_r]
@@ -430,7 +433,7 @@ def _finde_sop_kreuzungen(
 
         # Fallende Flanke: letztes Drittel des Pulses bis kurz nach Pulsende
         idx_f = np.where((zeit >= run['t_end'] - puls_dauer * 0.3) &
-                         (zeit <= run['t_end'] + 0.5))[0]
+                         (zeit <= run['t_end'] + vorlauf))[0]
         if len(idx_f) >= 2:
             s = signal[idx_f]
             kpos = np.where((s[:-1] >= sop_level) & (s[1:] < sop_level))[0]
@@ -545,7 +548,7 @@ def _baue_traces(
     for name in _draw_order:
         _ci = alle_sensor_namen.index(name) if name in alle_sensor_namen else 0
         fig.add_trace(go.Scatter(
-            x=df_plot['Zeit (ms)'], y=df_plot[name],
+            x=df_plot['Zeit'], y=df_plot[name],
             name=name, line=dict(color=KANAL_FARBEN[_ci]),
             yaxis=kanal_zu_yaxis.get(name, 'y'),
         ))
@@ -626,28 +629,28 @@ def _baue_traces(
 
     if show_velocity and velocity is not None:
         fig.add_trace(go.Scatter(
-            x=df_plot['Zeit (ms)'], y=velocity,
+            x=df_plot['Zeit'], y=velocity,
             name='D', yaxis=v_yaxis, line=dict(color=FARBE_D),
         ))
     if show_acceleration and acceleration is not None:
         fig.add_trace(go.Scatter(
-            x=df_plot['Zeit (ms)'], y=acceleration,
+            x=df_plot['Zeit'], y=acceleration,
             name='D2', yaxis=a_yaxis, line=dict(color=FARBE_D2),
         ))
 
     if show_integral:
         # Fläche unter der Kanalkurve zwischen XA und XB
-        _mask_fill = (df_plot['Zeit (ms)'] >= xa) & (df_plot['Zeit (ms)'] <= xb)
+        _mask_fill = (df_plot['Zeit'] >= xa) & (df_plot['Zeit'] <= xb)
         _df_fill   = df_plot[_mask_fill]
         if len(_df_fill) > 0:
             _zeichne_integral_flaeche(
-                fig, _df_fill['Zeit (ms)'].values, _df_fill[active_sensor].values,
+                fig, _df_fill['Zeit'].values, _df_fill[active_sensor].values,
                 yaxis=active_yaxis,
             )
 
     if show_integral_curve and len(df_plot) > 1:
         # Kumulativer Integralverlauf zwischen XA und XB, ab XA normiert auf 0
-        _t_all  = df_plot['Zeit (ms)'].values
+        _t_all  = df_plot['Zeit'].values
         _sig    = df_plot[active_sensor].fillna(0).values
         _mask_c = (_t_all >= xa) & (_t_all <= xb)
         if np.any(_mask_c):
@@ -726,7 +729,7 @@ def build_chart_png(
     if velocity_data is None or acceleration_data is None:
         if len(df) > 1:
             arr  = df[active_sensor].values
-            dt_s = (df['Zeit (ms)'].iloc[1] - df['Zeit (ms)'].iloc[0]) / hz_faktor
+            dt_s = (df['Zeit'].iloc[1] - df['Zeit'].iloc[0]) / hz_faktor  # display_unit / (display_unit/s) = s
             if show_velocity and velocity_data is None:
                 roh = reader.berechne_sg_ableitung(arr, dt_s, window_length, 1)
                 velocity = roh * v_faktor if roh is not None else None
@@ -765,8 +768,8 @@ def build_chart_png(
     active_yaxis = kanal_zu_yaxis.get(active_sensor, 'y')
 
     export_fig = go.Figure()
-    t_min = float(df['Zeit (ms)'].min())
-    t_max = float(df['Zeit (ms)'].max())
+    t_min = float(df['Zeit'].min())
+    t_max = float(df['Zeit'].max())
 
     _baue_traces(
         export_fig, df, sensor_namen,
