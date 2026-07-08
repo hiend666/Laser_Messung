@@ -54,14 +54,19 @@ def wahl_zeiteinheit(max_s: float) -> tuple[float, str]:
     Gibt (hz_faktor, einheit_label) zurück:
     - hz_faktor:     Sekunden × hz_faktor = Anzeigewert
     - einheit_label: 's', 'ms', 'µs' oder 'ns'
+
+    Kandidaten werden von fein nach grob getestet: die feinste Einheit, die
+    den Maximalwert in [0.02, 800] hält, wird bevorzugt.
+    Beispiel: 50 ms → ms (nicht s), 90 µs → µs (nicht ms).
     """
-    kandidaten = [(1.0, 's'), (1e3, 'ms'), (1e6, 'µs'), (1e9, 'ns')]
+    # Fein → Grob: ns, µs, ms, s
+    kandidaten = [(1e9, 'ns'), (1e6, 'µs'), (1e3, 'ms'), (1.0, 's')]
     for hz_faktor, label in kandidaten:
         val = max_s * hz_faktor
         if 0.020 <= val <= 800:
             return hz_faktor, label
-    # Kein perfektes Fenster: erste Einheit nehmen bei der max >= 0.02
-    for hz_faktor, label in kandidaten:
+    # Kein perfektes Fenster: gröbste Einheit wählen, bei der max >= 0.02
+    for hz_faktor, label in reversed(kandidaten):
         if max_s * hz_faktor >= 0.020:
             return hz_faktor, label
     return 1e9, 'ns'

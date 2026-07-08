@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.05.01"
+VERSION = "v1.05.02"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
