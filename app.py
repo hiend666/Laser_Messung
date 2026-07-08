@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.05.03"
+VERSION = "v1.05.04"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -306,9 +306,11 @@ def _make_cursor_cb(cursor: str, source: str):
     from_key = sw_key if source == 'slider' else nw_key
     to_key   = nw_key if source == 'slider' else sw_key
     def _cb():
-        t_off = float(st.session_state.get('_t_offset', 0.0))
+        t_off  = float(st.session_state.get('_t_offset', 0.0))
+        _scale = float(st.session_state.get('_vis_scale', 1.0))
         val_rel = float(st.session_state[from_key])
-        st.session_state[cursor] = round(val_rel + t_off, 3)
+        # val_rel ist in Anzeigeeinheit; / _scale → interne Einheit, + t_off → absolut
+        st.session_state[cursor] = round(val_rel / _scale + t_off, 6)
         st.session_state[to_key] = val_rel
     return _cb
 
@@ -1179,6 +1181,14 @@ else:
     max_zeit = round(max_zeit_full, 3)
     max_idx  = max_idx_full
 
+# Automatische Einheitenskalierung: feinste Einheit wählen, bei der der
+# sichtbare Zeitbereich ohne viele Nachkommastellen dargestellt werden kann.
+# Beispiel: 200 µs crop bei ms-Ladedatei → Anzeige in µs statt 0,2 ms.
+_vis_range_s  = (max_zeit - min_zeit) / _hz_faktor
+_vis_hz, _vis_einheit = (reader.wahl_zeiteinheit(_vis_range_s)
+                          if _vis_range_s > 0 else (_hz_faktor, _zeit_einheit))
+_vis_scale = _vis_hz / _hz_faktor   # interne Einheit × _vis_scale = Anzeigewert
+st.session_state['_vis_scale'] = _vis_scale
 
 # ---------------------------------------------------------------------------
 # SIDEBAR: AUSWERTUNGS-STEUERUNG
@@ -1225,8 +1235,8 @@ st.session_state['_t_offset'] = t_offset   # Callbacks im nächsten Run lesen di
 # xa_sw/xb_sw müssen VOR dem Widget-Rendering gesetzt werden, weil x_rel_mode
 # die Darstellung transformiert (xa - t_offset). Callbacks dürfen hier nicht
 # verwendet werden, da t_offset erst jetzt bekannt ist.
-st.session_state.xa_sw = round(xa - t_offset, 3)
-st.session_state.xb_sw = round(xb - t_offset, 3)
+st.session_state.xa_sw = round((xa - t_offset) * _vis_scale, 6)
+st.session_state.xb_sw = round((xb - t_offset) * _vis_scale, 6)
 # Berechnungen nutzen immer den sortierten Bereich – Slider-Reihenfolge egal
 if xa > xb:
     xa, xb = xb, xa
@@ -1808,25 +1818,21 @@ if _ys_axis_range and len(_ys_axis_range) == 2:
 
 fig = go.Figure()
 
-# Relative Zeitachse: Chart-Variablen um t_offset verschieben (Daten bleiben intern absolut)
-if t_offset != 0.0:
-    def _ct(t): return (t - t_offset) if t is not None else None
+# Relative Zeitachse + automatische Einheitenskalierung:
+# (t - t_offset) × _vis_scale → Anzeigewert in _vis_einheit.
+# Daten bleiben intern in der Ladeeinheit; Chart-Variablen _c sind nur für die Anzeige.
+def _sc(t): return (t - t_offset) * _vis_scale if t is not None else None
+if t_offset != 0.0 or _vis_scale != 1.0:
     df_plot_c = df_plot.copy()
-    df_plot_c['Zeit (ms)'] = df_plot_c['Zeit (ms)'] - t_offset
-    xa_c, xb_c       = xa - t_offset, xb - t_offset
-    min_c, max_c      = min_zeit - t_offset, max_zeit - t_offset
-    sop_c = [(t-t_offset, t0-t_offset, t1-t_offset, y) for t, t0, t1, y in sop_linien]
-    t_vmax_start_c, t_vmax_ende_c = _ct(t_vmax_start), _ct(t_vmax_ende)
-    t_vmin_start_c, t_vmin_ende_c = _ct(t_vmin_start), _ct(t_vmin_ende)
-    t_amax_f_c, t_amax_r_c        = _ct(t_amax_falling), _ct(t_amax_rising)
+    df_plot_c['Zeit (ms)'] = (df_plot_c['Zeit (ms)'] - t_offset) * _vis_scale
 else:
     df_plot_c = df_plot
-    xa_c, xb_c  = xa, xb
-    min_c, max_c = min_zeit, max_zeit
-    sop_c = sop_linien
-    t_vmax_start_c, t_vmax_ende_c = t_vmax_start, t_vmax_ende
-    t_vmin_start_c, t_vmin_ende_c = t_vmin_start, t_vmin_ende
-    t_amax_f_c, t_amax_r_c        = t_amax_falling, t_amax_rising
+xa_c, xb_c             = _sc(xa),            _sc(xb)
+min_c, max_c            = _sc(min_zeit),      _sc(max_zeit)
+sop_c = [(_sc(t), _sc(t0), _sc(t1), y) for t, t0, t1, y in sop_linien]
+t_vmax_start_c, t_vmax_ende_c = _sc(t_vmax_start), _sc(t_vmax_ende)
+t_vmin_start_c, t_vmin_ende_c = _sc(t_vmin_start), _sc(t_vmin_ende)
+t_amax_f_c, t_amax_r_c        = _sc(t_amax_falling), _sc(t_amax_rising)
 
 _baue_traces(
     fig, df_plot_c, sichtbare_sensor_namen,
@@ -1852,13 +1858,13 @@ _y_lim_keys = (
 _y_lim_token = hash(tuple(st.session_state.get(k, 0) for k in _y_lim_keys))
 _axis_token  = hash(tuple(sorted(kanal_zu_yaxis.items())))
 
-_x_titel = f"Zeit rel. ({_zeit_einheit})" if t_offset != 0.0 else f"Zeit ({_zeit_einheit})"
+_x_titel = f"Zeit rel. ({_vis_einheit})" if t_offset != 0.0 else f"Zeit ({_vis_einheit})"
 fig.update_layout(
     xaxis_title=_x_titel,
     height=600,
     hovermode="x unified",
     legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}-{active_sensor}",
+    uirevision=f"{st.session_state.zoom_token}-{st.session_state.crop_start}-{st.session_state.crop_end}-{_y_lim_token}-{_axis_token}-{round(max_zeit_full, 4)}-{t_offset}-{_vis_scale}-{st.session_state.window_length}-{st.session_state.window_length_accel}-{v_einheit}-{a_einheit}-{active_sensor}",
     xaxis=dict(autorange=True,
                rangemode='normal' if t_offset != 0.0 else 'nonnegative',
                domain=[0, x_domain_end],
@@ -1907,27 +1913,33 @@ if _slider_right_pad > 0.01:
 else:
     c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
-    _sl_min   = round(min_zeit - t_offset, 9)
-    _sl_max   = round(max_zeit - t_offset, 9)
+    _sl_min   = round((min_zeit - t_offset) * _vis_scale, 6)
+    _sl_max   = round((max_zeit - t_offset) * _vis_scale, 6)
     _sl_range = abs(_sl_max - _sl_min)
-    # Adaptiver Schritt: max. 1000 Positionen, mindestens 1e-9 in Anzeigeeinheit.
-    # Verhindert zu grobe Slider (z. B. step=1ms bei 200µs Bereich nach Crop in 's').
-    _sl_step  = min(0.001, max(1e-9, _sl_range / 1000.0)) if _sl_range > 1e-9 else 0.001
+    # Adaptiver Schritt: ca. 1000 Positionen über den sichtbaren Bereich.
+    _sl_step  = max(1e-9, _sl_range / 1000.0) if _sl_range > 1e-9 else 1e-3
     _sl_step  = round(_sl_step, 9)
-    # Dezimalstellen ans Schrittmaß anpassen, max. 6 Stellen (= 1µs in 's')
-    _sl_prec  = min(6, max(3, int(np.ceil(-np.log10(_sl_step))) + 1)) if 0 < _sl_step < 0.001 else 3
-    _sl_fmt   = f"%.{_sl_prec}f {_zeit_einheit}"
+    # Dezimalstellen: genug um den Schritt darzustellen (min. 0, max. 6)
+    if _sl_step >= 1.0:
+        _sl_prec = 0
+    elif _sl_step >= 0.1:
+        _sl_prec = 1
+    elif _sl_step >= 0.01:
+        _sl_prec = 2
+    else:
+        _sl_prec = min(6, max(3, int(np.ceil(-np.log10(_sl_step))) + 1))
+    _sl_fmt   = f"%.{_sl_prec}f {_vis_einheit}"
     st.slider(
         "XA", _sl_min, _sl_max,
         key="xa_sw", step=_sl_step, format=_sl_fmt,
         on_change=update_xa_from_slider, label_visibility="collapsed",
-        help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
+        help=f"Linker Cursor XA ({_vis_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
     st.slider(
         "XB", _sl_min, _sl_max,
         key="xb_sw", step=_sl_step, format=_sl_fmt,
         on_change=update_xb_from_slider, label_visibility="collapsed",
-        help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
+        help=f"Rechter Cursor XB ({_vis_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
 
 # ---------------------------------------------------------------------------
@@ -1965,7 +1977,7 @@ if crop_active:
     _cs_disp = st.session_state.crop_start - t_offset
     _ce_disp = st.session_state.crop_end   - t_offset
     st.caption(
-        f"✂️ Crop aktiv: {_cs_disp:.3f} {_zeit_einheit} – {_ce_disp:.3f} {_zeit_einheit}"
+        f"✂️ Crop aktiv: {_fmt_zeit(_cs_disp, _zeit_einheit)} – {_fmt_zeit(_ce_disp, _zeit_einheit)}"
     )
 
 # ---------------------------------------------------------------------------
