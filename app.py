@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.05.02"
+VERSION = "v1.05.03"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -1907,17 +1907,25 @@ if _slider_right_pad > 0.01:
 else:
     c_pad, c_slider = st.columns([0.04, 0.96])
 with c_slider:
-    _sl_min = round(min_zeit - t_offset, 3)
-    _sl_max = round(max_zeit - t_offset, 3)
+    _sl_min   = round(min_zeit - t_offset, 9)
+    _sl_max   = round(max_zeit - t_offset, 9)
+    _sl_range = abs(_sl_max - _sl_min)
+    # Adaptiver Schritt: max. 1000 Positionen, mindestens 1e-9 in Anzeigeeinheit.
+    # Verhindert zu grobe Slider (z. B. step=1ms bei 200µs Bereich nach Crop in 's').
+    _sl_step  = min(0.001, max(1e-9, _sl_range / 1000.0)) if _sl_range > 1e-9 else 0.001
+    _sl_step  = round(_sl_step, 9)
+    # Dezimalstellen ans Schrittmaß anpassen, max. 6 Stellen (= 1µs in 's')
+    _sl_prec  = min(6, max(3, int(np.ceil(-np.log10(_sl_step))) + 1)) if 0 < _sl_step < 0.001 else 3
+    _sl_fmt   = f"%.{_sl_prec}f {_zeit_einheit}"
     st.slider(
         "XA", _sl_min, _sl_max,
-        key="xa_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
+        key="xa_sw", step=_sl_step, format=_sl_fmt,
         on_change=update_xa_from_slider, label_visibility="collapsed",
         help=f"Linker Cursor XA ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )
     st.slider(
         "XB", _sl_min, _sl_max,
-        key="xb_sw", step=0.001, format=f"%.3f {_zeit_einheit}",
+        key="xb_sw", step=_sl_step, format=_sl_fmt,
         on_change=update_xb_from_slider, label_visibility="collapsed",
         help=f"Rechter Cursor XB ({_zeit_einheit}) – ziehen oder Wert im Expander 'Diagrammarker' eingeben.",
     )

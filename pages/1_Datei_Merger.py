@@ -483,7 +483,11 @@ else:
         while len(_einheiten_csx) < MAX_KANAELE:
             _einheiten_csx.append('µm')
 
-        _sr_hz = (1.0 / _dt_s_export) if _dt_s_export > 0 else 1000.0
+        _sr_hz     = (1.0 / _dt_s_export) if _dt_s_export > 0 else 1000.0
+        _total_s   = (out_len - 1) * _dt_s_export
+        # Zeiteinheit bestimmen wie sie die Haupt-App beim Import wählen würde
+        _hz_f_disp, _ = reader.wahl_zeiteinheit(_total_s) if _total_s > 0 else (1000.0, 'ms')
+        _xb_csx    = round(_total_s * _hz_f_disp, 3)
         _csx_settings: dict = {
             'file_type_radio':      'Oszilloskop CSV',
             'max_samples':          0,
@@ -492,6 +496,11 @@ else:
             'sample_rate':          _sr_hz,
             'sample_rate_unit':     'Hz',
             'sample_rate_unit_toggle': False,
+            # Cursor und Crop auf Gesamtbereich zurücksetzen
+            'xa':          0.0,
+            'xb':          _xb_csx,
+            'crop_start':  None,
+            'crop_end':    None,
         }
         for _ci in range(1, MAX_KANAELE + 1):
             _in_export = _ci <= n_selected
