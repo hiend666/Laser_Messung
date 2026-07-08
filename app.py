@@ -360,8 +360,8 @@ _CURSOR_STEP = 0.001   # Slider-Schrittweite für XA/XB – alle Cursor-Werte m�
 def _setze_cursor_position(total_time_ms: float) -> None:
     """Setzt XA und XB auf Standardposition (30 % und 60 % der Gesamtzeit).
     Werte werden auf Slider-Schrittweite gerundet um Streamlit-Alignment-Fehler zu vermeiden."""
-    xa_init = round(total_time_ms * CURSOR_XA_INIT_FRAC, 3)
-    xb_init = round(total_time_ms * CURSOR_XB_INIT_FRAC, 3)
+    xa_init = round(total_time_ms * CURSOR_XA_INIT_FRAC, 9)
+    xb_init = round(total_time_ms * CURSOR_XB_INIT_FRAC, 9)
     st.session_state.xa    = xa_init
     st.session_state.xa_sw = xa_init
     st.session_state.xb    = xb_init
@@ -1222,8 +1222,8 @@ sichtbare_sensor_namen = [
 _aktiv_einheit = kanal_einheit_map.get(active_sensor, 'µm')
 v_einheit, a_einheit, v_faktor, a_faktor = _ableit_info(_aktiv_einheit, _zeit_einheit)
 
-xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 3)
-xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 3)
+xa = round(float(np.clip(st.session_state.xa, min_zeit, max_zeit)), 9)
+xb = round(float(np.clip(st.session_state.xb, min_zeit, max_zeit)), 9)
 st.session_state.xa = xa
 st.session_state.xb = xb
 
@@ -1959,8 +1959,8 @@ with btn_col1:
                  help="Schneidet die Ansicht auf den Bereich zwischen XA und XB zu (je 15 % Rand beiderseits)."):
         st.session_state.crop_start = crop_t0
         st.session_state.crop_end   = crop_t1
-        _xa_new = round(float(min(xa, xb)), 3)
-        _xb_new = round(float(max(xa, xb)), 3)
+        _xa_new = round(float(min(xa, xb)), 9)
+        _xb_new = round(float(max(xa, xb)), 9)
         st.session_state.xa = _xa_new
         st.session_state.xb = _xb_new
         st.session_state.zoom_token += 1
