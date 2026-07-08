@@ -1919,16 +1919,7 @@ with c_slider:
     # Adaptiver Schritt: ca. 1000 Positionen über den sichtbaren Bereich.
     _sl_step  = max(1e-9, _sl_range / 1000.0) if _sl_range > 1e-9 else 1e-3
     _sl_step  = round(_sl_step, 9)
-    # Dezimalstellen: genug um den Schritt darzustellen (min. 0, max. 6)
-    if _sl_step >= 1.0:
-        _sl_prec = 0
-    elif _sl_step >= 0.1:
-        _sl_prec = 1
-    elif _sl_step >= 0.01:
-        _sl_prec = 2
-    else:
-        _sl_prec = min(6, max(3, int(np.ceil(-np.log10(_sl_step))) + 1))
-    _sl_fmt   = f"%.{_sl_prec}f {_vis_einheit}"
+    _sl_fmt   = f"%.3f {_vis_einheit}"
     st.slider(
         "XA", _sl_min, _sl_max,
         key="xa_sw", step=_sl_step, format=_sl_fmt,
