@@ -35,6 +35,9 @@ import reader
 
 MAX_KANAELE = 4   # entspricht N_KANÄLE in app.py
 
+# Muss mit EINHEIT_OPTIONEN in app.py synchron bleiben
+EINHEIT_OPTIONEN = ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+
 
 def _fmt_de(value: float, nachkomma: int = 0) -> str:
     """Formatiert eine Zahl im deutschen Format (Punkt=Tausender, Komma=Dezimal)."""
@@ -405,18 +408,17 @@ else:
     _dt_s_export = _dt_export / _hz_faktor_export
 
     # --- Einheiten pro Kanal (Oszilloskop CSV-Header) ---
-    st.markdown("**Einheiten** (für Oszilloskop-Export, optional):")
+    st.markdown("**Einheiten** (für Oszilloskop- und CSX-Export):")
     _einheit_spalten = st.columns(n_selected)
     _einheiten_export: list[str] = []
     for _i, _ecol in enumerate(_einheit_spalten):
         with _ecol:
             _einheiten_export.append(
-                st.text_input(
+                st.selectbox(
                     out_names[_i],
-                    value="",
+                    options=EINHEIT_OPTIONEN,
                     key=f"merger_osc_einheit_{_i}",
-                    placeholder="z.B. µm, mm/s",
-                ).strip()
+                )
             )
 
     # --- Oszilloskop-CSV-Bytes vorab bauen (wird auch vom CSX-Export benötigt) ---
@@ -476,12 +478,8 @@ else:
 
     # --- CSX (Oszilloskop CSV + eingebettete Kanal-Einstellungen) ---
     with dl_col4:
-        # Nur in EINHEIT_OPTIONEN der Hauptapp gültige Einheiten übernehmen, sonst 'µm'
-        _gueltige_einheiten = frozenset(
-            ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
-        )
-        _einheiten_csx = [e if e in _gueltige_einheiten else 'µm' for e in _einheiten_export]
-        # Auf MAX_KANAELE auffüllen
+        # Dropdown garantiert bereits gültige Einheiten; auf MAX_KANAELE auffüllen
+        _einheiten_csx = list(_einheiten_export)
         while len(_einheiten_csx) < MAX_KANAELE:
             _einheiten_csx.append('µm')
 
