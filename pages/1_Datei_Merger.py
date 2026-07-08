@@ -20,6 +20,8 @@ from __future__ import annotations
 import sys
 import pathlib
 
+import json
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -383,8 +385,11 @@ else:
     if _dts_eff:
         _dt_export       = float(min(_dts_eff))
         _hz_faktor_export = hz_faktor_target
+        _zeit_einheit_disp = {1000.0: 'ms', 1_000_000.0: 'µs', 1_000_000_000.0: 'ns', 1.0: 's'}.get(
+            float(_hz_faktor_export), 'ms'
+        )
         st.caption(
-            f"⏱️ Δt = {_fmt_de(_dt_export, 6)} ms "
+            f"⏱️ Δt = {_fmt_de(_dt_export, 6)} {_zeit_einheit_disp} "
             f"(≈ {_fmt_de(_hz_faktor_export / _dt_export, 1)} Hz, aus Quelldateien)"
         )
     else:
@@ -414,7 +419,15 @@ else:
                 ).strip()
             )
 
-    dl_col1, dl_col2, dl_col3 = st.columns(3)
+    # --- Oszilloskop-CSV-Bytes vorab bauen (wird auch vom CSX-Export benötigt) ---
+    _osc_header = "x-axis," + ",".join(str(_i + 1) for _i in range(n_selected))
+    _osc_units  = "second," + ",".join(_einheiten_export)
+    _zeit_s     = np.arange(out_len, dtype=np.float64) * _dt_s_export
+    _val_lines  = out_df.to_csv(index=False, header=False, float_format="%.6f").splitlines()
+    _osc_daten  = [f"{_t:.9e},{_v}" for _t, _v in zip(_zeit_s, _val_lines)]
+    _osc_bytes  = "\n".join([_osc_header, _osc_units] + _osc_daten).encode("utf-8")
+
+    dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
 
     # --- CSV plain ---
     with dl_col1:
@@ -430,7 +443,9 @@ else:
 
     # --- TXT Hubmessung ---
     with dl_col2:
-        _zeit_ms = np.arange(out_len, dtype=np.float64) * _dt_export
+        # _dt_export liegt in _hz_faktor_export-Einheiten (µs, ms, s …) → immer in ms umrechnen
+        _dt_ms_export = _dt_export / _hz_faktor_export * 1000.0
+        _zeit_ms = np.arange(out_len, dtype=np.float64) * _dt_ms_export
         _txt_df  = pd.DataFrame({"Time (ms)": _zeit_ms})
         for _col in out_df.columns:
             _txt_df[_col] = out_df[_col].values
@@ -450,17 +465,6 @@ else:
 
     # --- Oszilloskop CSV ---
     with dl_col3:
-        # Zeile 1: x-axis,1,2,...  |  Zeile 2: second,Einheit1,Einheit2,...
-        _osc_header = "x-axis," + ",".join(str(_i + 1) for _i in range(n_selected))
-        _osc_units  = "second," + ",".join(_einheiten_export)
-        # Zeitachse in Sekunden (wissenschaftliche Notation wie im Originalformat)
-        _zeit_s     = np.arange(out_len, dtype=np.float64) * _dt_s_export
-        # Wertzeilen via pandas – kommagetrennt, Punkt-Dezimal, kein Header/Index
-        _val_lines  = out_df.to_csv(
-            index=False, header=False, float_format="%.6f"
-        ).splitlines()
-        _osc_daten  = [f"{_t:.9e},{_v}" for _t, _v in zip(_zeit_s, _val_lines)]
-        _osc_bytes  = "\n".join([_osc_header, _osc_units] + _osc_daten).encode("utf-8")
         st.download_button(
             "💾 Oszilloskop CSV",
             data=_osc_bytes,
@@ -469,3 +473,53 @@ else:
             width="stretch",
         )
         st.caption("Dateityp 'Oszilloskop CSV'.")
+
+    # --- CSX (Oszilloskop CSV + eingebettete Kanal-Einstellungen) ---
+    with dl_col4:
+        # Nur in EINHEIT_OPTIONEN der Hauptapp gültige Einheiten übernehmen, sonst 'µm'
+        _gueltige_einheiten = frozenset(
+            ['µm', 'mm', 'm', 'V', 'mV', 'A', 'mA', 'N', 'kN', 'bar', 'Pa', '°C', '%']
+        )
+        _einheiten_csx = [e if e in _gueltige_einheiten else 'µm' for e in _einheiten_export]
+        # Auf MAX_KANAELE auffüllen
+        while len(_einheiten_csx) < MAX_KANAELE:
+            _einheiten_csx.append('µm')
+
+        _sr_hz = (1.0 / _dt_s_export) if _dt_s_export > 0 else 1000.0
+        _csx_settings: dict = {
+            'file_type_radio':      'Oszilloskop CSV',
+            'max_samples':          0,
+            'skip_rows':            0,
+            'active_sensor_name':   out_names[0] if out_names else '',
+            'sample_rate':          _sr_hz,
+            'sample_rate_unit':     'Hz',
+            'sample_rate_unit_toggle': False,
+        }
+        for _ci in range(1, MAX_KANAELE + 1):
+            _in_export = _ci <= n_selected
+            _csx_settings[f'ch{_ci}_name']    = out_names[_ci - 1] if _in_export else ''
+            _csx_settings[f'ch{_ci}_einheit'] = _einheiten_csx[_ci - 1]
+            _csx_settings[f'osc_skale_{_ci}'] = 1.0
+            _csx_settings[f'off{_ci}']        = 0.0
+            _csx_settings[f'off{_ci}_slider'] = 0.0
+            _csx_settings[f'x_off{_ci}']     = 0.0
+            _csx_settings[f'show_ch{_ci}']   = _in_export
+            _csx_settings[f'ch{_ci}_sg_en']  = False
+            _csx_settings[f'ch{_ci}_sg_win'] = 5
+            _csx_settings[f'ch{_ci}_ymin']   = 0.0
+            _csx_settings[f'ch{_ci}_ymax']   = 0.0
+
+        _csx_bytes = (
+            _osc_bytes
+            + b"\n###CSX_SETTINGS_BEGIN###\n"
+            + json.dumps(_csx_settings, ensure_ascii=False).encode('utf-8')
+            + b"\n###CSX_SETTINGS_END###\n"
+        )
+        st.download_button(
+            "💾 CSX",
+            data=_csx_bytes,
+            file_name="kombiniert.csx",
+            mime="text/plain",
+            width="stretch",
+        )
+        st.caption("Oszi CSV + Kanaleinstellungen, direkt in Haupt-App laden.")

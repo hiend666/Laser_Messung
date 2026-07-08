@@ -1,0 +1,697 @@
+<title>Format-Übersicht · Laser Messung</title>
+<style>
+  /* ── Token-System ─────────────────────────────────────────── */
+  :root {
+    --bg:          #ECEEE9;
+    --bg-surface:  #E2E5DE;
+    --bg-header:   #D4D8D0;
+    --text:        #1B1F17;
+    --text-muted:  #5A6054;
+    --accent:      #2A6645;
+    --accent-glow: #2A664530;
+    --yes-bg:      #D1EAD9;
+    --yes-fg:      #1B5E35;
+    --hint-bg:     #FDF0DC;
+    --hint-fg:     #7A4A08;
+    --no-bg:       #F2DEDE;
+    --no-fg:       #7A1F1F;
+    --warn-bg:     #FFF3CC;
+    --warn-fg:     #7A5A00;
+    --border:      #C0C4BC;
+    --rule:        #B0B4AC;
+    --mono:        'Courier New', 'Lucida Console', monospace;
+    --sans:        system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:          #141610;
+      --bg-surface:  #1D201A;
+      --bg-header:   #252820;
+      --text:        #DEE2D8;
+      --text-muted:  #858D7C;
+      --accent:      #4DAF7C;
+      --accent-glow: #4DAF7C25;
+      --yes-bg:      #1A3626;
+      --yes-fg:      #6DC993;
+      --hint-bg:     #2E2410;
+      --hint-fg:     #E0A855;
+      --no-bg:       #2A1515;
+      --no-fg:       #E07070;
+      --warn-bg:     #2A2310;
+      --warn-fg:     #D4B050;
+      --border:      #2C2F28;
+      --rule:        #353830;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:          #ECEEE9;
+    --bg-surface:  #E2E5DE;
+    --bg-header:   #D4D8D0;
+    --text:        #1B1F17;
+    --text-muted:  #5A6054;
+    --accent:      #2A6645;
+    --accent-glow: #2A664530;
+    --yes-bg:      #D1EAD9;
+    --yes-fg:      #1B5E35;
+    --hint-bg:     #FDF0DC;
+    --hint-fg:     #7A4A08;
+    --no-bg:       #F2DEDE;
+    --no-fg:       #7A1F1F;
+    --warn-bg:     #FFF3CC;
+    --warn-fg:     #7A5A00;
+    --border:      #C0C4BC;
+    --rule:        #B0B4AC;
+  }
+  :root[data-theme="dark"] {
+    --bg:          #141610;
+    --bg-surface:  #1D201A;
+    --bg-header:   #252820;
+    --text:        #DEE2D8;
+    --text-muted:  #858D7C;
+    --accent:      #4DAF7C;
+    --accent-glow: #4DAF7C25;
+    --yes-bg:      #1A3626;
+    --yes-fg:      #6DC993;
+    --hint-bg:     #2E2410;
+    --hint-fg:     #E0A855;
+    --no-bg:       #2A1515;
+    --no-fg:       #E07070;
+    --warn-bg:     #2A2310;
+    --warn-fg:     #D4B050;
+    --border:      #2C2F28;
+    --rule:        #353830;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 2.5rem 1.5rem 4rem;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ──────────────────────────────────────────────── */
+  .page-header {
+    margin-bottom: 2.5rem;
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 1.25rem;
+  }
+  .page-eyebrow {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  h1 {
+    font-size: 1.65rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-wrap: balance;
+    color: var(--text);
+    margin-bottom: 0.6rem;
+  }
+  .page-subtitle {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    max-width: 60ch;
+  }
+
+  /* ── Legend ──────────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    margin-bottom: 2rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28em;
+    padding: 0.18em 0.55em;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge-yes  { background: var(--yes-bg);  color: var(--yes-fg); }
+  .badge-hint { background: var(--hint-bg); color: var(--hint-fg); }
+  .badge-no   { background: var(--no-bg);   color: var(--no-fg); }
+  .badge-warn { background: var(--warn-bg); color: var(--warn-fg); }
+
+  /* ── Section label ───────────────────────────────────────── */
+  .section-label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 2rem 0 0.75rem;
+  }
+
+  /* ── Matrix table ────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  thead tr.format-row th {
+    padding: 0;
+    text-align: left;
+    border-bottom: 2px solid var(--accent);
+  }
+  .format-cell {
+    padding: 0.6rem 0.75rem 0.55rem;
+    background: var(--bg-header);
+    border-right: 1px solid var(--border);
+  }
+  .format-cell:last-child { border-right: none; }
+  .format-cell.row-head-th {
+    background: transparent;
+    border-bottom: 2px solid var(--accent);
+    min-width: 140px;
+  }
+  .format-name {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--accent);
+    display: block;
+    letter-spacing: 0.04em;
+  }
+  .format-origin {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+    display: block;
+  }
+  .format-stripe {
+    height: 3px;
+    background: var(--accent);
+    margin-bottom: 0.5rem;
+    border-radius: 1px;
+  }
+  .format-stripe.s1 { background: #2A6645; }
+  .format-stripe.s2 { background: #4A7A32; }
+  .format-stripe.s3 { background: #1A5B7A; }
+  .format-stripe.s4 { background: #7A4A18; }
+
+  thead tr.sub-head th {
+    background: var(--bg-surface);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.35rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr.group-start td, tbody tr.group-start th {
+    border-top: 2px solid var(--border);
+  }
+
+  td, th {
+    padding: 0.6rem 0.75rem;
+    vertical-align: top;
+    text-align: left;
+  }
+  th.row-head {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 0.82rem;
+    white-space: nowrap;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    min-width: 140px;
+  }
+  .row-desc {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-top: 0.1rem;
+  }
+  td {
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+  }
+  td:last-child { border-right: none; }
+  .cell-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .cell-note {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  /* Group divider rows */
+  tr.group-divider th,
+  tr.group-divider td {
+    padding: 0;
+    height: 0;
+    border-bottom: none;
+  }
+  .group-header-row th {
+    background: var(--bg-surface);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.4rem 0.75rem;
+    border-top: 2px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .group-header-row td {
+    background: var(--bg-surface);
+    border-top: 2px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 0.4rem 0;
+  }
+
+  /* ── Workflow cards ──────────────────────────────────────── */
+  .workflow-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+  .workflow-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1rem;
+  }
+  .workflow-format {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .workflow-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+  .workflow-dot.d1 { background: #2A6645; }
+  .workflow-dot.d2 { background: #4A7A32; }
+  .workflow-dot.d3 { background: #1A5B7A; }
+  .workflow-dot.d4 { background: #7A4A18; }
+  .workflow-steps {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .workflow-steps li {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    display: flex;
+    gap: 0.4rem;
+    line-height: 1.4;
+  }
+  .step-num {
+    flex-shrink: 0;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--accent);
+    font-weight: 700;
+    margin-top: 0.1em;
+  }
+  .step-key {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  /* ── Warning callout ─────────────────────────────────────── */
+  .callout {
+    background: var(--warn-bg);
+    border-left: 3px solid var(--warn-fg);
+    border-radius: 0 4px 4px 0;
+    padding: 0.75rem 1rem;
+    margin-top: 1.25rem;
+    font-size: 0.78rem;
+    color: var(--warn-fg);
+    line-height: 1.5;
+  }
+  .callout strong { font-weight: 700; }
+  .callout code {
+    font-family: var(--mono);
+    font-size: 0.85em;
+    background: color-mix(in srgb, var(--warn-fg) 12%, transparent);
+    padding: 0.1em 0.3em;
+    border-radius: 2px;
+  }
+
+  /* ── Note / footnote ─────────────────────────────────────── */
+  .footnote {
+    margin-top: 2rem;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    line-height: 1.6;
+  }
+  .footnote strong { color: var(--text); }
+
+  @media (max-width: 600px) {
+    body { padding: 1.5rem 1rem 3rem; }
+    h1 { font-size: 1.3rem; }
+  }
+</style>
+
+<div class="page-header">
+  <div class="page-eyebrow">Laser Messung · Merger &amp; Import</div>
+  <h1>Welches Format überträgt welche Informationen?</h1>
+  <p class="page-subtitle">Übersicht der drei Merger-Exportformate und des Haupt-App-Formats CSX — was wird in die Datei geschrieben und was wird beim erneuten Importieren automatisch erkannt.</p>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <span class="legend-item"><span class="badge badge-yes">✓ Automatisch</span> Geschrieben + beim Import ohne Eingriff erkannt</span>
+  <span class="legend-item"><span class="badge badge-hint">◑ Mit Toggle / Hinweis</span> Vorhanden, aber manueller Schritt nötig</span>
+  <span class="legend-item"><span class="badge badge-no">— Fehlt</span> Nicht in der Datei enthalten</span>
+  <span class="legend-item"><span class="badge badge-warn">⚠ Fehler</span> Vorhanden, aber fehlerhaft</span>
+</div>
+
+<!-- Matrix -->
+<div class="section-label">Format-Vergleich</div>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr class="format-row">
+      <th class="format-cell row-head-th"></th>
+
+      <th class="format-cell">
+        <div class="format-stripe s1"></div>
+        <span class="format-name">CSV plain</span>
+        <span class="format-origin">Merger · kombiniert_plain.csv</span>
+      </th>
+      <th class="format-cell">
+        <div class="format-stripe s2"></div>
+        <span class="format-name">TXT Hubmessung</span>
+        <span class="format-origin">Merger · kombiniert_hubmessung.txt</span>
+      </th>
+      <th class="format-cell">
+        <div class="format-stripe s3"></div>
+        <span class="format-name">Oszilloskop CSV</span>
+        <span class="format-origin">Merger · kombiniert_oszilloskop.csv</span>
+      </th>
+      <th class="format-cell">
+        <div class="format-stripe s4"></div>
+        <span class="format-name">CSX</span>
+        <span class="format-origin">Haupt-App · Datei-Export</span>
+      </th>
+    </tr>
+  </thead>
+
+  <tbody>
+    <!-- GROUP: Kanaldaten -->
+    <tr class="group-header-row">
+      <th>Kanaldaten</th>
+      <td colspan="4"></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Kanalnamen<span class="row-desc">z.B. "Stern", "HS"</span></th>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-hint">◑ Mit Toggle</span>
+          <span class="cell-note">Header-Zeile vorhanden. Im Import: Toggle <em>"Kanalnamen aus Zeile 1"</em> aktivieren.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Nicht gelesen</span>
+          <span class="cell-note">Header steht in der Datei, wird aber vom Reader übersprungen. Manuell setzen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Nur Nummern</span>
+          <span class="cell-note">Header enthält nur <code style="font-family:monospace;font-size:0.8em">x-axis,1,2,3,…</code> — keine echten Namen. Manuell setzen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">ch1_name … ch4_name vollständig gespeichert und beim Laden wiederhergestellt.</span>
+        </div>
+      </td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Kanaleinheiten<span class="row-desc">z.B. µm, Volt, mm/s</span></th>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Fehlt</span>
+          <span class="cell-note">Keine Einheitenzeile im Format. Manuell im Kanal-Expander wählen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Fehlt</span>
+          <span class="cell-note">Keine Einheitenzeile. Manuell setzen.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-hint">◑ Als Hinweis</span>
+          <span class="cell-note">Zeile 2 enthält Einheiten (z.B. <code style="font-family:monospace;font-size:0.8em">second,Volt,µm</code>). Im Import als <em>[Volt]</em>-Hinweis sichtbar — Dropdown muss manuell gesetzt werden.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">ch1_einheit … ch4_einheit vollständig gespeichert.</span>
+        </div>
+      </td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Skalierungsfaktor<span class="row-desc">Rohwert × Faktor</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">osc_skale_1 … osc_skale_4 gespeichert.</span>
+        </div>
+      </td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Y-Offsets<span class="row-desc">off1 … off4</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span><span class="cell-note">Offsets sind in den Rohwerten eingearbeitet wenn aus Hubmessung exportiert.</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">off1 … off4 gespeichert.</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- GROUP: Zeitdaten -->
+    <tr class="group-header-row">
+      <th>Zeitdaten</th>
+      <td colspan="4"></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Zeitachse (Δt)<span class="row-desc">Abtastrate / Zeitbasis</span></th>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Fehlt</span>
+          <span class="cell-note">Keine Zeitspalte. Abtastrate muss im Import manuell eingegeben werden.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note"><code style="font-family:monospace;font-size:0.8em">Time (ms)</code>-Spalte vorhanden. Δt wird beim Import aus dem Datei-Inhalt abgeleitet.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">Zeitspalte in Sekunden. Δt und Abtastrate werden automatisch erkannt.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">sample_rate + Rohdaten vollständig gespeichert.</span>
+        </div>
+      </td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Zeiteinheit<span class="row-desc">s / ms / µs / ns</span></th>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-no">— Fehlt</span>
+          <span class="cell-note">Implizit über manuell eingegebene Abtastrate.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-warn">⚠ Immer ms</span>
+          <span class="cell-note">Header schreibt stets <em>"Time (ms)"</em>. Wenn Quelldatei µs-Basis hat, wird Δt falsch skaliert — Faktor 1000-Fehler beim Reimport!</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">Zeitspalte in Sekunden. <code style="font-family:monospace;font-size:0.8em">wahl_zeiteinheit()</code> wählt µs / ms / s automatisch.</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-inner">
+          <span class="badge badge-yes">✓ Automatisch</span>
+          <span class="cell-note">sample_rate_unit gespeichert.</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- GROUP: Analyse-Einstellungen -->
+    <tr class="group-header-row">
+      <th>Analyse-Einstellungen</th>
+      <td colspan="4"></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Cursor XA / XB<span class="row-desc">Auswertungsbereich</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-yes">✓ Automatisch</span><span class="cell-note">xa / xb gespeichert.</span></div></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Diagramm-Marker<span class="row-desc">D-max, D-min, D2, SOP</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-yes">✓ Automatisch</span><span class="cell-note">mark_vmax, mark_vmin, mark_afall, mark_arise, show_sop, sop_percent.</span></div></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">SG-Filter<span class="row-desc">Fensterlänge, Ordnung</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-yes">✓ Automatisch</span><span class="cell-note">window_length, window_length_accel, ch_sg_en, ch_sg_win.</span></div></td>
+    </tr>
+
+    <tr>
+      <th class="row-head">Aktiver Kanal<span class="row-desc">Auswertungskanal</span></th>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-no">— Fehlt</span></div></td>
+      <td><div class="cell-inner"><span class="badge badge-yes">✓ Automatisch</span><span class="cell-note">active_sensor_name gespeichert.</span></div></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<!-- Bug callout -->
+<div class="callout">
+  <strong>⚠ Bekannte Einschränkung — TXT Hubmessung mit µs-Quellen:</strong>
+  Die Merger-TXT schreibt den Zeitvektor stets mit dem Label <code>Time (ms)</code>, speichert aber die Δt-Werte in der Einheit der Quelldatei. Wenn die Quelle eine Oszilloskop-CSV mit µs-Zeitbasis ist, erscheinen die Zeitwerte beim Re-Import als Hubmessung um den Faktor 1000 zu groß (z.&nbsp;B. <code>0,5 µs → 0,5 ms</code>).
+  <br>Workaround: Für Quellen im µs-Bereich stattdessen <strong>Oszilloskop CSV</strong> als Exportformat verwenden.
+</div>
+
+<!-- Workflow Empfehlung -->
+<div class="section-label" style="margin-top:2.5rem">Import-Workflow je Format</div>
+<div class="workflow-grid">
+
+  <div class="workflow-card">
+    <div class="workflow-format"><span class="workflow-dot d1"></span>CSV plain</div>
+    <ul class="workflow-steps">
+      <li><span class="step-num">①</span><span>Dateityp: <span class="step-key">CSV plain</span></span></li>
+      <li><span class="step-num">②</span><span>Kopfzeilen überspringen: <span class="step-key">0</span></span></li>
+      <li><span class="step-num">③</span><span>Toggle <span class="step-key">"Kanalnamen aus Zeile 1"</span> aktivieren</span></li>
+      <li><span class="step-num">④</span><span>Abtastrate <span class="step-key">manuell</span> eingeben</span></li>
+      <li><span class="step-num">⑤</span><span>Einheiten je Kanal <span class="step-key">manuell</span> wählen</span></li>
+    </ul>
+  </div>
+
+  <div class="workflow-card">
+    <div class="workflow-format"><span class="workflow-dot d2"></span>TXT Hubmessung</div>
+    <ul class="workflow-steps">
+      <li><span class="step-num">①</span><span>Dateityp: <span class="step-key">Hubmessung</span></span></li>
+      <li><span class="step-num">②</span><span>Zeitachse wird <span class="step-key">automatisch</span> erkannt</span></li>
+      <li><span class="step-num">③</span><span>Kanalnamen <span class="step-key">manuell</span> setzen</span></li>
+      <li><span class="step-num">④</span><span>Einheiten je Kanal <span class="step-key">manuell</span> wählen</span></li>
+      <li><span class="step-num">⑤</span><span>⚠ Nicht für µs-Quellen geeignet</span></li>
+    </ul>
+  </div>
+
+  <div class="workflow-card">
+    <div class="workflow-format"><span class="workflow-dot d3"></span>Oszilloskop CSV</div>
+    <ul class="workflow-steps">
+      <li><span class="step-num">①</span><span>Dateityp: <span class="step-key">Oszilloskop CSV</span></span></li>
+      <li><span class="step-num">②</span><span>Zeitachse + Einheit <span class="step-key">automatisch</span></span></li>
+      <li><span class="step-num">③</span><span>Einheiten aus <em>[Hinweis]</em> im Dropdown <span class="step-key">manuell</span> bestätigen</span></li>
+      <li><span class="step-num">④</span><span>Kanalnamen <span class="step-key">manuell</span> setzen</span></li>
+      <li><span class="step-num">⑤</span><span>Empfohlen für µs-Daten</span></li>
+    </ul>
+  </div>
+
+  <div class="workflow-card">
+    <div class="workflow-format"><span class="workflow-dot d4"></span>CSX (Vollständig)</div>
+    <ul class="workflow-steps">
+      <li><span class="step-num">①</span><span>Merger → Oszilloskop CSV exportieren</span></li>
+      <li><span class="step-num">②</span><span>In Haupt-App laden, Kanäle konfigurieren</span></li>
+      <li><span class="step-num">③</span><span>Export-Format: <span class="step-key">CSX</span> wählen</span></li>
+      <li><span class="step-num">④</span><span>Alle Einstellungen <span class="step-key">automatisch</span> beim nächsten Laden</span></li>
+    </ul>
+  </div>
+
+</div>
+
+<div class="footnote">
+  <strong>CSX wird nicht direkt vom Merger erzeugt.</strong> Der CSX-Export steht nur in der Haupt-App zur Verfügung (Seitenleiste → Export → Format: CSX). Er speichert alle <code style="font-family:monospace;font-size:0.85em">EINSTELLUNGEN_KEYS</code> inklusive der eingebetteten Messdaten. Ein CSX aus einem früheren Merge-Workflow (Merger → Oszilloskop CSV → Haupt-App → CSX) ist der einzige verlustfreie Rückweg.
+</div>
