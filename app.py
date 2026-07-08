@@ -38,7 +38,7 @@ _baue_traces = chart_module._baue_traces
 build_chart_png = chart_module.build_chart_png
 build_pdf = chart_module.build_pdf
 
-VERSION = "v1.05.00"
+VERSION = "v1.05.01"
 
 # ---------------------------------------------------------------------------
 # KONSTANTEN
@@ -1974,19 +1974,21 @@ z2.metric("Frequenz Δt (A-B)", _fmt_freq(freq_hz))
 z3.metric("Δs (A-B)",          _fmt_val(dy, _aktiv_einheit))
 z4.metric("Hub Best-fit",      _fmt_val(hub, _aktiv_einheit) if not np.isnan(hub) else "N/A")
 
-# Zeile 2 – 1. Ableitung (v_max/v_min nur wenn show_velocity aktiv)
+# Zeile 2 – 1. Ableitung (v_max/v_min wenn Linie aktiv oder Marker gesetzt)
 g1, g2, g3, g4 = st.columns(4)
 g1.metric(f"d{active_sensor}/dt (A-B)",   _fmt_val(v_avg, v_einheit))
 g2.metric(f"Δd{active_sensor}/dt (A-B)",  _fmt_val(v_cursor_delta, v_einheit) if not np.isnan(v_cursor_delta) else "N/A")
-if show_velocity:
+if show_velocity or (mark_vmax and has_vmax):
     g3.metric(f"d{active_sensor}/dt max", _fmt_val(v_max, v_einheit) if not np.isnan(v_max) else "N/A")
+if show_velocity or (mark_vmin and has_vmin):
     g4.metric(f"d{active_sensor}/dt min", _fmt_val(v_min, v_einheit) if not np.isnan(v_min) else "N/A")
 
-# Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral (a-Werte nur wenn show_acceleration aktiv)
+# Zeile 3 – 2. Ableitung + Integral + Multi-Kanal-Integral (a-Werte wenn Linie aktiv oder Marker gesetzt)
 _mc_auswahl = st.session_state.get('multi_kanal_auswahl', [])
 a1, a2, a3, a4 = st.columns(4)
-if show_acceleration:
+if show_acceleration or (mark_afall and has_amax_falling):
     a1.metric(f"d²{active_sensor}/dt² max Fall.", _fmt_val(a_max_falling, a_einheit) if not np.isnan(a_max_falling) else "N/A")
+if show_acceleration or (mark_arise and has_amax_rising):
     a2.metric(f"d²{active_sensor}/dt² min Rise.", _fmt_val(a_min_rising, a_einheit)  if not np.isnan(a_min_rising) else "N/A")
 if show_integral:
     a3.metric(f"∫{active_sensor} dt (A-B)",   _fmt_integral(integral_val, _aktiv_einheit, _zeit_einheit))
@@ -2111,12 +2113,14 @@ if _exp_mit_werten and _exp_ist_diagramm:
         # Noch nie eine Auswahl getroffen (auch nicht durch Laden von Einstellungen) -> alle vorauswählen.
         _vorauswahl = _alle_metrik_keys
     else:
-        # Bewusste Nutzerauswahl (oder geladene Einstellung) vorhanden: nur Keys behalten,
-        # die es in den aktuellen Metriken noch gibt (z.B. nach Sensor-/Datei-Wechsel).
-        # Bewusst KEIN Reset auf "alle", auch wenn dadurch die Auswahl leer wird –
-        # sonst würden state-abhängige Metrik-Namen (aktiver Kanal, SOP-%, ...) bei jeder
-        # Änderung die gespeicherte/geladene Auswahl unbemerkt auf "alle" zurücksetzen.
-        _vorauswahl = [k for k in _gespeicherte_auswahl if k in _alle_metrik_keys]
+        # Bewusste Nutzerauswahl (oder geladene Einstellung) vorhanden.
+        # Gespeicherte Keys behalten soweit noch vorhanden; neu hinzugekommene Keys
+        # (z.B. Marker frisch aktiviert) werden automatisch zur Auswahl ergänzt –
+        # damit ein neu gesetzter D-max-Marker direkt im Export erscheint.
+        _saved_set  = set(_gespeicherte_auswahl)
+        _saved_valid = [k for k in _gespeicherte_auswahl if k in _alle_metrik_keys]
+        _neue_keys   = [k for k in _alle_metrik_keys if k not in _saved_set]
+        _vorauswahl  = _saved_valid + _neue_keys
     st.session_state['export_wert_auswahl'] = _vorauswahl
     st.sidebar.multiselect(
         "Exportierte Werte", _alle_metrik_keys,
