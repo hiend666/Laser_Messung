@@ -353,7 +353,8 @@ def _on_window_length_accel_cb():
 
 
 def _on_v_time_base_cb():
-    st.session_state['v_time_base_s'] = st.session_state['v_time_base_s_sw']
+    _hz = float(st.session_state.get('_tb_hz', 1.0))
+    st.session_state['v_time_base_s'] = st.session_state['v_time_base_s_sw'] / _hz
 
 def _on_x_rel_mode_change():
     """Friert den Nullpunkt ein wenn Start@0 aktiviert wird; löscht ihn beim Deaktivieren."""
@@ -1267,6 +1268,7 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     _tb_max_curr = _x_len * 0.50
     # Anzeigeeinheit für den Slider autoscale (Sekunden → passende Einheit)
     _tb_hz, _tb_s_einheit = reader.wahl_zeiteinheit(_tb_max_curr)
+    st.session_state['_tb_hz'] = _tb_hz   # Callback liest den Faktor für die Rückrechnung in Sekunden
     _tb_min_d = _tb_min_curr * _tb_hz
     _tb_max_d = _tb_max_curr * _tb_hz
     _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
