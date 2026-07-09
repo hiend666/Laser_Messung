@@ -353,8 +353,12 @@ def _on_window_length_accel_cb():
 
 
 def _on_v_time_base_cb():
+    # Widget-Wert (v_time_base_s_sw) liegt in Slider-Anzeigeeinheit vor (z.B. ms).
+    # _tb_hz rechnet zurück in Sekunden (Sekunden × _tb_hz = Anzeigewert).
+    # float64 mit voller Auflösung (~15 Stellen) – mind. 9 Nachkommastellen
+    # für µs-Bereich bei kleinen Crops (z.B. 0.000005 s = 5 µs).
     _hz = float(st.session_state.get('_tb_hz', 1.0))
-    st.session_state['v_time_base_s'] = st.session_state['v_time_base_s_sw'] / _hz
+    st.session_state['v_time_base_s'] = float(np.float64(st.session_state['v_time_base_s_sw']) / np.float64(_hz))
 
 def _on_x_rel_mode_change():
     """Friert den Nullpunkt ein wenn Start@0 aktiviert wird; löscht ihn beim Deaktivieren."""
@@ -1269,17 +1273,25 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
     # Anzeigeeinheit für den Slider autoscale (Sekunden → passende Einheit)
     _tb_hz, _tb_s_einheit = reader.wahl_zeiteinheit(_tb_max_curr)
     st.session_state['_tb_hz'] = _tb_hz   # Callback liest den Faktor für die Rückrechnung in Sekunden
-    _tb_min_d = _tb_min_curr * _tb_hz
-    _tb_max_d = _tb_max_curr * _tb_hz
-    _tb_step_d = float(max(1e-12, (_tb_max_d - _tb_min_d) / 200))
+    # Float64 mit max. Auflösung – mind. 9 Nachkommastellen für µs-Bereich bei kleinen Crops.
+    # np.float64 hat ~15 signifikante Stellen, daher reicht das auch bei kleinen Werten.
+    _tb_min_d = float(np.float64(_tb_min_curr * _tb_hz))
+    _tb_max_d = float(np.float64(_tb_max_curr * _tb_hz))
+    # Schrittweite fest auf 200 Schritte innerhalb des gecropten Zeitbereichs.
+    # float64 garantiert ausreichende Auflösung (~15 Stellen), auch bei µs-Crops.
+    _tb_step_d = float(np.float64((_tb_max_d - _tb_min_d) / 200.0))
     _tb_dez = max(0, -int(math.floor(math.log10(_tb_step_d)))) if _tb_step_d >= 1e-12 else 2
     _tb_fmt = f"%.{_tb_dez}f"
     # Gespeicherten s-Wert in Slider-Einheit umrechnen; fehlt er → autom. Default (3% der Zeitachse)
     _tb_saved_s = st.session_state.get('v_time_base_s')
-    if _tb_saved_s is not None:
-        _tb_def_d = float(np.clip(_tb_saved_s * _tb_hz, _tb_min_d, _tb_max_d))
+    if _tb_saved_s is not None and _tb_min_curr <= _tb_saved_s <= _tb_max_curr:
+        # Gespeicherter Wert liegt im gültigen Bereich → übernehmen (float64)
+        _tb_def_d = float(np.float64(_tb_saved_s * _tb_hz))
     else:
-        _tb_def_d = float(np.clip(_x_len * 0.03 * _tb_hz, _tb_min_d, _tb_max_d))
+        # Wert fehlt oder ist außerhalb des neuen Bereichs (z.B. nach Crop-Änderung
+        # mit kleinerem Zeitfenster) → Default: 3% der aktuellen Zeitachse.
+        # Verhindert, dass der Slider auf sein Maximum springt.
+        _tb_def_d = float(np.clip(np.float64(_x_len * 0.03 * _tb_hz), _tb_min_d, _tb_max_d))
     # Widget-Mirror-Key immer auf geclippten Wert setzen – verhindert Out-of-Range nach Datei-Wechsel
     st.session_state['v_time_base_s_sw'] = _tb_def_d
     _v_tb_display = st.slider(
@@ -1290,7 +1302,8 @@ with st.sidebar.expander("Diagrammarker", expanded=False):
         on_change=_on_v_time_base_cb,
         help="Mittelungsfenster für d/dt-max, d²/dt²-max und SOP: Der Peak wird über dieses Zeitfenster gemittelt. Kleiner = empfindlicher, größer = robuster gegenüber Rauschen.",
     )
-    v_time_base_s = _v_tb_display / _tb_hz   # Slider-Einheit → Sekunden
+    # Slider-Einheit → Sekunden mit float64-Auflösung (mind. 9 Nachkommastellen)
+    v_time_base_s = float(np.float64(_v_tb_display) / np.float64(_tb_hz))
     st.session_state['v_time_base_s'] = v_time_base_s
     st.divider()
     st.caption("Diagrammlinien")
