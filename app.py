@@ -219,6 +219,7 @@ _RUNTIME_DEFAULTS: dict = {
     'xb_sw': 0.001,
     'zoom_token': 0,
     'last_file_name': None,
+    'export_wert_bekannte_keys': None,
     'window_length_sw': 30,
     'window_length_accel_sw': 40,
     'v_time_base_s_sw': None,
@@ -2146,18 +2147,26 @@ _exp_mit_werten = st.sidebar.toggle(
 if _exp_mit_werten and _exp_ist_diagramm:
     _alle_metrik_keys = list(metrics.keys())
     _gespeicherte_auswahl = st.session_state.get('export_wert_auswahl')
+
+    # _bekannte_keys: Keys die beim letzten Render vorhanden waren.
+    # Beim ersten Render (Session-Start oder nach Settings-Load) auf alle aktuellen
+    # Keys initialisieren, damit nur echte Neuzugänge auto-ergänzt werden und
+    # die gespeicherte Auswahl (inkl. Abwahlen) erhalten bleibt.
+    _bk_raw = st.session_state.get('export_wert_bekannte_keys')
+    _bekannte_keys = set(_bk_raw) if _bk_raw is not None else set(_alle_metrik_keys)
+
     if _gespeicherte_auswahl is None:
-        # Noch nie eine Auswahl getroffen (auch nicht durch Laden von Einstellungen) -> alle vorauswählen.
         _vorauswahl = _alle_metrik_keys
     else:
-        # Bewusste Nutzerauswahl (oder geladene Einstellung) vorhanden.
-        # Gespeicherte Keys behalten soweit noch vorhanden; neu hinzugekommene Keys
-        # (z.B. Marker frisch aktiviert) werden automatisch zur Auswahl ergänzt –
-        # damit ein neu gesetzter D-max-Marker direkt im Export erscheint.
-        _saved_set  = set(_gespeicherte_auswahl)
-        _saved_valid = [k for k in _gespeicherte_auswahl if k in _alle_metrik_keys]
-        _neue_keys   = [k for k in _alle_metrik_keys if k not in _saved_set]
+        _saved_valid = [k for k in _gespeicherte_auswahl if k in set(_alle_metrik_keys)]
+        # Nur Keys, die seit dem letzten Render erstmals aufgetaucht sind (z. B. frisch
+        # aktivierter Marker), werden automatisch ergänzt. Explizit abgewählte Keys
+        # bleiben abgewählt, weil sie in _bekannte_keys stehen.
+        _neue_keys   = [k for k in _alle_metrik_keys if k not in _bekannte_keys]
         _vorauswahl  = _saved_valid + _neue_keys
+
+    # Bekannte Keys für nächsten Render festhalten (vor Widget-Rendering setzen)
+    st.session_state['export_wert_bekannte_keys'] = _alle_metrik_keys
     st.session_state['export_wert_auswahl'] = _vorauswahl
     st.sidebar.multiselect(
         "Exportierte Werte", _alle_metrik_keys,
