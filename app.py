@@ -128,7 +128,7 @@ st.markdown("""
 # Externe Setter (Buttons, Auto-Reset) schreiben nur in freie Keys.
 # Ausnahmen mit Einzelschlüssel (Widget = Wahrheitsquelle): ya_sw, yb_sw,
 # off_kanal_sel, active_sensor_name — diese haben keine schreibenden Callbacks.
-_CH_NAMEN_DEFAULT  = ['Festo', 'DST'] + [''] * (N_KANÄLE - 2)
+_CH_NAMEN_DEFAULT  = [f'Kanal {i}' for i in range(1, N_KANÄLE + 1)]
 _OSC_SKALE_DEFAULT = [1.0, 1.0, 100.0] + [1.0] * (N_KANÄLE - 3)
 
 # Speicherbare Einstellungen: Dict ist gleichzeitig Defaults und Schlüsselliste.
@@ -672,8 +672,8 @@ _DATEITYP_KANAELE: dict[str, list[dict]] = {
         {'name': 'Hub',      'einheit': 'µm', 'skale': 1.0},
     ],
     "CSV plain": [
-        {'name': 'Festo',    'einheit': 'µm', 'skale': 1.0},
-        {'name': 'DST',      'einheit': 'µm', 'skale': 1.0},
+        {'name': 'Kanal 1',  'einheit': 'µm', 'skale': 1.0},
+        {'name': 'Kanal 2',  'einheit': 'µm', 'skale': 1.0},
     ],
     "Oszilloskop CSV": [
         {'name': 'Strom',    'einheit': 'A',  'skale': 1.0},
@@ -2156,7 +2156,7 @@ if _exp_mit_werten and _exp_ist_diagramm:
     _bekannte_keys = set(_bk_raw) if _bk_raw is not None else set(_alle_metrik_keys)
 
     if _gespeicherte_auswahl is None:
-        _vorauswahl = _alle_metrik_keys
+        _vorauswahl = []   # Session-Start: leer; User wählt explizit aus
     else:
         _saved_valid = [k for k in _gespeicherte_auswahl if k in set(_alle_metrik_keys)]
         # Nur Keys, die seit dem letzten Render erstmals aufgetaucht sind (z. B. frisch
