@@ -298,3 +298,76 @@ class TestSopSgvLaenge:
         )
         assert linien == []
         assert math.isnan(v_sop)
+
+
+# ---------------------------------------------------------------------------
+# Bug #4 – SOP findet keine Kreuzung, wenn sop_percent < 50 % Hub
+# Bei kontinuierlichem Anstieg beginnt der Rechteck-Fit-Run erst bei
+# 50 % des Hubs (threshold = 0.5 * (min + max)). Liegt der SOP-Pegel darunter,
+# überschreitet die Kurve ihn vor run['t_start'] – außerhalb des bisherigen
+# fixen Vorlaufs (10 Samples). Das Suchfenster muss dynamisch nach links
+# erweitert werden.
+# ---------------------------------------------------------------------------
+
+class TestSopPegelUnter50:
+    """SOP-Pegel unterhalb des Rechteck-Thresholds (< 50 % Hub) muss gefunden
+    werden, auch wenn die Kurve den Pegel vor run['t_start'] überschreitet."""
+
+    def _kontinuierlicher_anstieg(self, n=300, dt_us=1.0,
+                                    y_start=0.0, y_ende=300.0,
+                                    puls_start_us=150.0, puls_ende_us=250.0):
+        """Linear ansteigendes Signal: 0 → 300 µm über die gesamte Dauer.
+        Rechteck-Fit-Run simuliert beginnt erst bei 150 µm (50 % Hub)."""
+        zeit_s    = np.arange(n) * dt_us * 1e-6
+        signal    = np.linspace(y_start, y_ende, n)
+        return zeit_s, signal
+
+    def _minimal_rect_fit(self, t_start, t_end, y_low, y_high):
+        return {
+            'y_low':  y_low,
+            'y_high': y_high,
+            'runs': [{'t_start': t_start, 't_end': t_end}],
+        }
+
+    def test_sop_unter_50_prozent_findet_kreuzung(self):
+        """SOP bei 30 % muss gefunden werden, obwohl run['t_start'] bei 50 % liegt."""
+        zeit, signal = self._kontinuierlicher_anstieg()
+        # Run beginnt erst dort, wo Kurve 150 µm erreicht (Index 150, 150 µs)
+        rect_fit = self._minimal_rect_fit(
+            t_start=float(zeit[150]), t_end=float(zeit[250]),
+            y_low=0.0, y_high=300.0
+        )
+        linien, v_sop = chart_module._finde_sop_kreuzungen(
+            zeit, signal, rect_fit,
+            sop_percent=30.0,
+            sample_rate=1.0e6,   # 1 µs-Schritt
+            halbes_zeitfenster=3,
+            v_faktor=1.0,
+            sg_v=None,
+        )
+        assert len(linien) > 0, "SOP-Kreuzung bei 30 % Hub nicht gefunden"
+        assert not math.isnan(v_sop)
+        # SOP-Pegel = 0 + 0.3 * 300 = 90 µm → Kreuzung bei Index 90 (90 µs)
+        t_sop = linien[0][0]
+        assert math.isclose(t_sop, zeit[90], rel_tol=1e-6, abs_tol=1e-9), \
+            f"SOP bei t={t_sop:.6e}s erwartet={zeit[90]:.6e}s"
+
+    def test_sop_50_prozent_findet_kreuzung(self):
+        """SOP bei 50 % – Regressionstest für unverändertes Verhalten."""
+        zeit, signal = self._kontinuierlicher_anstieg()
+        rect_fit = self._minimal_rect_fit(
+            t_start=float(zeit[150]), t_end=float(zeit[250]),
+            y_low=0.0, y_high=300.0
+        )
+        linien, v_sop = chart_module._finde_sop_kreuzungen(
+            zeit, signal, rect_fit,
+            sop_percent=50.0,
+            sample_rate=1.0e6,
+            halbes_zeitfenster=3,
+            v_faktor=1.0,
+            sg_v=None,
+        )
+        assert len(linien) > 0
+        assert not math.isnan(v_sop)
+        t_sop = linien[0][0]
+        assert math.isclose(t_sop, zeit[150], rel_tol=1e-6, abs_tol=1e-9)

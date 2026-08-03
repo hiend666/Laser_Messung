@@ -422,8 +422,23 @@ def _finde_sop_kreuzungen(
     for run in rect_fit['runs']:
         puls_dauer = max(vorlauf, run['t_end'] - run['t_start'])
 
-        # Steigende Flanke: kurz vor Pulsstart bis erstes Drittel des Pulses
-        idx_r = np.where((zeit >= run['t_start'] - vorlauf) &
+        # --- Steigende Flanke ---
+        # Liegt der SOP-Pegel unterhalb des Rechteck-Thresholds (< 50 % Hub),
+        # überschreitet die Kurve den Pegel bereits vor Pulsstart. Der fixe
+        # Vorlauf (10 Samples) reicht dann nicht aus. Das Suchfenster wird
+        # daher nach links dynamisch erweitert, bis das Signal unter sop_level
+        # fällt – so werden auch Werte außerhalb des Rechteck-Fits erfasst.
+        t_start_r_fix = run['t_start'] - vorlauf
+        mask_t_r = zeit >= t_start_r_fix
+        if np.any(mask_t_r):
+            idx_anfang = int(np.argmax(mask_t_r))
+            while idx_anfang > 0 and signal[idx_anfang] >= sop_level:
+                idx_anfang -= 1
+            t_start_r_dyn = float(zeit[idx_anfang])
+        else:
+            t_start_r_dyn = float(zeit[0]) if n else t_start_r_fix
+
+        idx_r = np.where((zeit >= t_start_r_dyn) &
                          (zeit <= run['t_start'] + puls_dauer * 0.3))[0]
         if len(idx_r) >= 2:
             s = signal[idx_r]
@@ -431,9 +446,22 @@ def _finde_sop_kreuzungen(
             if len(kpos):
                 ergebnisse.append(_kreuzung(int(idx_r[kpos[0] + 1]), 'rise'))
 
-        # Fallende Flanke: letztes Drittel des Pulses bis kurz nach Pulsende
+        # --- Fallende Flanke ---
+        # Symmetrische Erweiterung nach rechts, falls der SOP-Pegel oberhalb
+        # des Rechteck-Thresholds liegt (> 50 % Hub) und die Kurve den Pegel
+        # erst nach Pulsende unterschreitet.
+        t_ende_f_fix = run['t_end'] + vorlauf
+        mask_t_f = zeit <= t_ende_f_fix
+        if np.any(mask_t_f):
+            idx_ende = int(len(mask_t_f) - 1 - np.argmax(mask_t_f[::-1]))
+            while idx_ende < n - 1 and signal[idx_ende] >= sop_level:
+                idx_ende += 1
+            t_ende_f_dyn = float(zeit[idx_ende])
+        else:
+            t_ende_f_dyn = float(zeit[-1]) if n else t_ende_f_fix
+
         idx_f = np.where((zeit >= run['t_end'] - puls_dauer * 0.3) &
-                         (zeit <= run['t_end'] + vorlauf))[0]
+                         (zeit <= t_ende_f_dyn))[0]
         if len(idx_f) >= 2:
             s = signal[idx_f]
             kpos = np.where((s[:-1] >= sop_level) & (s[1:] < sop_level))[0]
