@@ -1368,8 +1368,23 @@ show_sop = st.sidebar.toggle(
     help="Zeigt die Geschwindigkeit an der steigenden Flanke des Rechtecksignals an einem einstellbaren Hub. Erfordert erkanntes Rechteck-Fit.",
 )
 if show_sop:
+    # Best-Fit-Hub des aktiven Kanals für die %-zu-Einheit-Umrechnung der Anzeige
+    _sop_hub = float("nan")
+    if df_use is not None and active_sensor in df_use.columns:
+        _sop_rect = compute_best_fit_rectangle(
+            df_use["Zeit (s)"].values,
+            df_use[active_sensor].values,
+        )
+        if _sop_rect is not None:
+            _sop_hub = abs(_sop_rect["y_high"] - _sop_rect["y_low"])
+    _sop_fmt = "SOP Pegel (%)"
+    if not np.isnan(_sop_hub) and _sop_hub != 0:
+        _sop_abs = _sop_hub * float(st.session_state.get("sop_percent", 80)) / 100.0
+        # Kompakte Anzeige im gewählten Kanal-Format, z. B. "50 (150µm)"
+        _sop_label = _fmt_val(_sop_abs, _aktiv_einheit).rstrip("0").rstrip(".").replace(" ", "")
+        _sop_fmt += f" ({_sop_label})"
     st.sidebar.slider(
-        "SOP Pegel (%)", 0, 100, step=1,
+        _sop_fmt, 0, 100, step=1,
         key="sop_percent",
         help="Höhe auf der steigenden Flanke in Prozent des Hub (0 % = unterer Pegel, 100 % = oberer Pegel).",
     )
